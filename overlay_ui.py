@@ -174,6 +174,10 @@ class OverlayMenu:
         self.user_scale = 1.0
         self._load_font = font_loader
         self.visible = False
+        # Fit mode (plain control window): the panel stretches to the
+        # window width instead of staying at PANEL_W. Overlay mode keeps
+        # the fixed width.
+        self.fit_window = False
         self.lang = "en"
         self.state: dict = {
             "nr": True,
@@ -493,8 +497,11 @@ class OverlayMenu:
                 self.settings_tab = saved_tab
             self._settings_content_h = tallest
         s = STRINGS.get(self.lang, STRINGS["en"])
-        w = self._u(PANEL_W)
         pad = self._u(PAD)
+        w = self._u(PANEL_W)
+        if self.fit_window:
+            # Fill the window: fixed margins, never narrower than 200u.
+            w = max(screen_w - pad * 2, self._u(200))
         label_h = self._u(LABEL_H)
         ctrl_h = self._u(CTRL_H)
         gap = self._u(ROW_GAP)

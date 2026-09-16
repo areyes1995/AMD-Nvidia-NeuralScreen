@@ -117,7 +117,7 @@ import numpy as np
 import pygame
 
 import fonts
-from overlay_ui import OverlayMenu, palette as ui_palette
+from overlay_ui import OverlayMenu, _rgb, palette as ui_palette
 
 from i18n import STRINGS
 
@@ -244,7 +244,12 @@ def _assemble_tiles(t: float, w: int, h: int) -> list:
 class Display:
     """Fullscreen borderless window that renders frames + branded HUD."""
 
-    def __init__(self, width: int, height: int, fullscreen: bool = True, click_through: bool = True):
+    #: Fixed client size of the plain control window (degraded mode).
+    PLAIN_W = 660
+    PLAIN_H = 900
+
+    def __init__(self, width: int, height: int, fullscreen: bool = True, click_through: bool = True,
+                 plain: bool = False):
         # DPI awareness is already set at module level (before import pygame).
         # Calling it again here has no effect - it is kept as a fallback for
         # cases where the module is imported without the top block.
@@ -267,52 +272,69 @@ class Display:
         except Exception:
             pass
         pygame.init()
-        pygame.display.set_caption("NeuralScreen")
-        # Borderless windowed instead of FULLSCREEN: a pygame fullscreen window
-        # loses its rendering on click/focus (the screen freezes while the loop
-        # keeps spinning). A window the size of the monitor at position (0,0)
-        # looks the same but is stable, and click-through works.
-        flags = pygame.NOFRAME
-        self._flags = flags
-        # pygame.HIDDEN (128, SDL_WINDOW_HIDDEN): create the window invisible.
-        # NOTE: the raw SDL flag 0x8 is IGNORED by pygame 2.6 (verified
-        # experimentally) - the window comes up visible. pygame.HIDDEN works;
-        # the explicit SW_HIDE below is a belt-and-suspenders fallback. Shown
-        # only once the first real frame arrives - otherwise a blank window
-        # sits over the desktop during the NGX warm-up (user: screen flashes
-        # on startup / on mode switches because a new window pops up empty).
-        hidden = pygame.NOFRAME | pygame.HIDDEN
-        self.screen = pygame.display.set_mode((width, height), hidden)
-        self.width, self.height = self.screen.get_size()
-        # The window starts hidden; reveal() shows it after the first real
-        # frame. set_visible/is_visible interplay: is_visible() is consulted
-        # by _follow_window before any show/hide decision, so the initial
-        # state must match the real (hidden) window.
-        self._visible = False
-        self._reveal_pending = True
-        # pygame 2.6 ignores SDL_WINDOW_HIDDEN (verified experimentally: the
-        # window is VISIBLE right after set_mode with the 0x8 flag) - hide it
-        # explicitly or a blank window flashes over the desktop during the
-        # NGX warm-up (user: translucent/blank flash on startup).
-        try:
-            hwnd = pygame.display.get_wm_info()["window"]
-            ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
-        except Exception:
-            pass
-        # Where this monitor's top-left corner is on the virtual desktop.
-        # (0,0) is the primary monitor; a second one can sit anywhere. Set
-        # through set_origin() once the monitor is known (main owns that).
-        self._origin = (0, 0)
-        self._move_to_origin()
-        # Force the physical window size: even if DPI awareness did not apply
-        # (a 3072x1728 window instead of 3840x2160), we stretch the window to
-        # the requested size so the pygame surface matches.
-        try:
-            hwnd = pygame.display.get_wm_info()["window"]
-            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, width, height, 0x0004)  # SWP_NOZORDER
-        except Exception:
-            pass
-        self._set_topmost()
+        # Plain control window (degraded mode, no worker): an ordinary
+        # framed window with a taskbar button - none of the overlay
+        # machinery (no topmost, no transparency, no click-through), so
+        # there is always a visible program window that behaves like one.
+        self._plain = bool(plain)
+        if self._plain:
+            pygame.display.set_caption("NeuralScreen (degraded - no worker)")
+            try:
+                os.environ["SDL_VIDEO_CENTERED"] = "1"
+            except Exception:
+                pass
+            self._flags = 0
+            self.screen = pygame.display.set_mode((width, height))
+            self.width, self.height = self.screen.get_size()
+            self._visible = True
+            self._reveal_pending = False
+            self._origin = (0, 0)
+        else:
+            pygame.display.set_caption("NeuralScreen")
+            # Borderless windowed instead of FULLSCREEN: a pygame fullscreen window
+            # loses its rendering on click/focus (the screen freezes while the loop
+            # keeps spinning). A window the size of the monitor at position (0,0)
+            # looks the same but is stable, and click-through works.
+            flags = pygame.NOFRAME
+            self._flags = flags
+            # pygame.HIDDEN (128, SDL_WINDOW_HIDDEN): create the window invisible.
+            # NOTE: the raw SDL flag 0x8 is IGNORED by pygame 2.6 (verified
+            # experimentally) - the window comes up visible. pygame.HIDDEN works;
+            # the explicit SW_HIDE below is a belt-and-suspenders fallback. Shown
+            # only once the first real frame arrives - otherwise a blank window
+            # sits over the desktop during the NGX warm-up (user: screen flashes
+            # on startup / on mode switches because a new window pops up empty).
+            hidden = pygame.NOFRAME | pygame.HIDDEN
+            self.screen = pygame.display.set_mode((width, height), hidden)
+            self.width, self.height = self.screen.get_size()
+            # The window starts hidden; reveal() shows it after the first frame. set_visible/is_visible interplay: is_visible() is consulted
+            # by _follow_window before any show/hide decision, so the initial
+            # state must match the real (hidden) window.
+            self._visible = False
+            self._reveal_pending = True
+            # pygame 2.6 ignores SDL_WINDOW_HIDDEN (verified experimentally: the
+            # window is VISIBLE right after set_mode with the 0x8 flag) - hide it
+            # explicitly or a blank window flashes over the desktop during the
+            # NGX warm-up (user: translucent/blank flash on startup).
+            try:
+                hwnd = pygame.display.get_wm_info()["window"]
+                ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
+            except Exception:
+                pass
+            # Where this monitor's top-left corner is on the virtual desktop.
+            # (0,0) is the primary monitor; a second one can sit anywhere. Set
+            # through set_origin() once the monitor is known (main owns that).
+            self._origin = (0, 0)
+            self._move_to_origin()
+            # Force the physical window size: even if DPI awareness did not apply
+            # (a 3072x1728 window instead of 3840x2160), we stretch the window to
+            # the requested size so the pygame surface matches.
+            try:
+                hwnd = pygame.display.get_wm_info()["window"]
+                ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, width, height, 0x0004)  # SWP_NOZORDER
+            except Exception:
+                pass
+            self._set_topmost()
         self.clock = pygame.time.Clock()
         self._hud: Dict = {}
         self._alerts: List[tuple[str, float]] = []  # (text, expires_at)
@@ -339,6 +361,11 @@ class Display:
         # of the game would steal focus and fight for topmost, whereas here we
         # are already above the frame and already transparent by key.
         self.menu = OverlayMenu(self.ui_scale, self._load_font)
+        if self._plain:
+            # The panel fills the control window (fit) and starts
+            # centred instead of at the fullscreen saved offset.
+            self.menu.fit_window = True
+            self.menu.offset = [0, 0]
         # The HUD is nothing but readings - fps, resolution, frame counter -
         # so it takes the monospaced face whole; the menu picks per element.
         self._font = self._load_font(size=self.font_size, mono=True)
@@ -351,10 +378,12 @@ class Display:
             pygame.display.set_swap_interval(0)
         except Exception:
             pass
-        self._excluded = self._exclude_from_capture()
+        # Plain control window: keep it capturable/sharable and with
+        # normal focus behaviour - none of the overlay styles apply.
+        self._excluded = False if self._plain else self._exclude_from_capture()
         self._click_through = False
         self._menu_input = False
-        if click_through:
+        if click_through and not self._plain:
             self._set_click_through()
         # NOTE: _visible/_reveal_pending are set right after set_mode - the
         # window starts hidden and reveal() shows it after the first frame.
@@ -485,6 +514,10 @@ class Display:
         except Exception:
             pass
 
+    def _is_plain(self) -> bool:
+        """Plain control window (degraded mode): no overlay geometry."""
+        return bool(getattr(self, "_plain", False))
+
     def move_to(self, x: int, y: int) -> None:
         """Put the overlay's top-left corner at (x, y) on the desktop.
 
@@ -497,6 +530,8 @@ class Display:
         # any anymore - it only has to remember where the window is, for the
         # frame blit when the worker is not presenting. This used to be a
         # SetWindowPos on every frame the target moved.
+        if self._is_plain():
+            return
         self._window_layer = (int(x), int(y),
                               self._frame_size[0] if self._frame_size else 0,
                               self._frame_size[1] if self._frame_size else 0)
@@ -519,7 +554,8 @@ class Display:
         nothing where they are looking (issues #28, #33).
         """
         self._origin = (int(x), int(y))
-        self._move_to_origin()
+        if not self._is_plain():
+            self._move_to_origin()
 
     def _move_to_origin(self) -> None:
         """Move the window to the monitor's top-left corner (self._origin)."""
@@ -615,6 +651,8 @@ class Display:
         loss - it is what stops OBS from seeing the overlay and stops the
         NVIDIA App from recording at all.
         """
+        if self._is_plain():
+            return True
         try:
             hwnd = pygame.display.get_wm_info()["window"]
             user32 = ctypes.windll.user32
@@ -642,6 +680,8 @@ class Display:
         otherwise there is no keyboard.
         """
         self._menu_input = bool(enabled)
+        if self._is_plain():
+            return
         try:
             hwnd = pygame.display.get_wm_info()["window"]
         except Exception as exc:
@@ -686,6 +726,8 @@ class Display:
         self._click_through = not enabled
 
     def resize(self, w: int, h: int) -> None:
+        if self._is_plain():
+            return
         """Resize the HUD layer WITHOUT destroying the SDL window.
 
         pygame.display.set_mode() on the same display reuses the existing
@@ -749,7 +791,7 @@ class Display:
         the teardown re-applies the pipeline's ones - tearing them down
         mid-veil turns the translucent layer opaque (audit M1).
         """
-        if self._switch_active:
+        if self._is_plain() or self._switch_active:
             return
         try:
             # set_mode returns a NEW surface - it must become self.screen,
@@ -775,6 +817,8 @@ class Display:
             print(f'Display: WARNING cannot expand the layer: {exc}')
 
     def set_window_layer(self, x: int, y: int, w: int, h: int) -> None:
+        if self._is_plain():
+            return
         """Shrink the HUD layer back onto the captured window.
 
         While the mode-switch veil is up the size is DEFERRED, exactly
@@ -879,7 +923,7 @@ class Display:
         here would cut the fade short. The teardown re-applies the state
         once the veil comes down.
         """
-        if self._switch_active:
+        if self._is_plain() or self._switch_active:
             return
         try:
             hwnd = pygame.display.get_wm_info()["window"]
@@ -921,6 +965,8 @@ class Display:
         self._last_overlay = 0.0  # the next draw_overlay redraws immediately
 
     def raise_topmost(self) -> None:
+        if self._is_plain():
+            return
         """Raise the worker picture first and the HUD last.
 
         Both windows are topmost, and inside that group the one raised last
@@ -1543,6 +1589,28 @@ class Display:
         self.menu.set_stats(self._hud)
         self.menu.draw(self.screen)
         self._draw_window_highlight()
+        self._sync_cursor()
+        pygame.display.flip()
+
+    def show_plain(self) -> None:
+        """Draw the menu into a plain control window (degraded mode).
+
+        No chroma key, no veil, no window highlight (its coordinates are
+        screen-space and this surface is window-space): the theme
+        background plus the menu, like any ordinary program window.
+        """
+        try:
+            pygame.event.pump()
+        except Exception:
+            pass
+        try:
+            bg = _rgb(self.theme.get("bg", "#0D1117"))
+        except Exception:
+            bg = BG_COLOR
+        self.screen.fill(bg)
+        self._draw_alerts()
+        self.menu.set_stats(self._hud)
+        self.menu.draw(self.screen)
         self._sync_cursor()
         pygame.display.flip()
 

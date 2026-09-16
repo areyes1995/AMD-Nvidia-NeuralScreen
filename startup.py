@@ -185,6 +185,56 @@ def _working_card_name(cfg: dict) -> str:
 ENVIRONMENT: dict = {}
 
 
+def _monitor_hz(devicename: str) -> float:
+    """Refresh rate of one monitor, for pacing the degraded loop.
+
+    The degraded layer carries no video - it only redraws the menu - but
+    spinning faster than the screen wastes a core while a fixed 60 Hz
+    stutters the panel on a high-refresh display. Falls back to 60: a
+    wrong pace only changes CPU use, never correctness.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class DEVMODEW(ctypes.Structure):
+            _fields_ = [
+                ("dmDeviceName", wintypes.WCHAR * 32),
+                ("dmSpecVersion", wintypes.WORD),
+                ("dmDriverVersion", wintypes.WORD),
+                ("dmSize", wintypes.WORD),
+                ("dmDriverExtra", wintypes.WORD),
+                ("dmFields", wintypes.DWORD),
+                ("dmPositionX", wintypes.LONG),
+                ("dmPositionY", wintypes.LONG),
+                ("dmDisplayOrientation", wintypes.DWORD),
+                ("dmDisplayFixedOutput", wintypes.DWORD),
+                ("dmColor", wintypes.SHORT),
+                ("dmDuplex", wintypes.SHORT),
+                ("dmYResolution", wintypes.SHORT),
+                ("dmTTOption", wintypes.SHORT),
+                ("dmCollate", wintypes.SHORT),
+                ("dmFormName", wintypes.WCHAR * 32),
+                ("dmLogPixels", wintypes.WORD),
+                ("dmBitsPerPel", wintypes.DWORD),
+                ("dmPelsWidth", wintypes.DWORD),
+                ("dmPelsHeight", wintypes.DWORD),
+                ("dmDisplayFlags", wintypes.DWORD),
+                ("dmDisplayFrequency", wintypes.DWORD),
+            ]
+
+        dm = DEVMODEW()
+        dm.dmSize = ctypes.sizeof(DEVMODEW)
+        if ctypes.windll.user32.EnumDisplaySettingsW(
+                devicename or None, 0xFFFFFFFF, ctypes.byref(dm)):
+            hz = int(dm.dmDisplayFrequency)
+            if 30 <= hz <= 360:
+                return float(hz)
+    except Exception:
+        pass
+    return 60.0
+
+
 def _log_environment(cfg: dict) -> None:
     """Print the environment header into the log: version, OS, HDR, driver.
 
@@ -414,14 +464,34 @@ def bring_up(st) -> None:
     # restarts climbed to NR OFF - the exact storm the shortening exists to
     # prevent (audit F3).
     st.effective_warmup = effective_warmup
-    st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(
-        st.params, st.work_w, st.work_h, effective_warmup, full_w, full_h, st.shm)
-    print(f"[main] worker started (pid {st.worker.pid}), header sent "
-          f"({st.work_w}x{st.work_h})")
+    st.degraded = False
+    try:
+        st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(
+            st.params, st.work_w, st.work_h, effective_warmup, full_w, full_h, st.shm)
+    except (FileNotFoundError, OSError) as exc:
+        # Degraded mode: the native worker (nvngx.dll) or the NR runtime
+        # is missing. The program still opens - overlay menu, tray,
+        # hotkeys, raw capture - with the neural functions disabled.
+        st.worker = None
+        st.worker_logs = []
+        st.reader = None
+        st.worker_stop = None
+        st.degraded = True
+        print(f"[main] worker unavailable ({exc}) - running degraded "
+              f"(no neural pass, raw capture only)", file=sys.stderr)
+    else:
+        print(f"[main] worker started (pid {st.worker.pid}), header sent "
+              f"({st.work_w}x{st.work_h})")
 
     print(f"[main] capturing monitor {st.monitor}: {st.capture.resolution}")
 
-    st.display = Display(st.width, st.height, fullscreen=bool(st.cfg["fullscreen"]))
+    if getattr(st, "degraded", False):
+        # No worker: a plain control window instead of the fullscreen
+        # overlay - always visible, behaves like any program window.
+        st.display = Display(Display.PLAIN_W, Display.PLAIN_H,
+                             fullscreen=False, plain=True)
+    else:
+        st.display = Display(st.width, st.height, fullscreen=bool(st.cfg["fullscreen"]))
     # The overlay is the size of one monitor and must sit ON it: created at
     # (0,0) it covered the primary screen while the capture ran elsewhere.
     st.display.set_origin(*st.mon_origin)
@@ -437,7 +507,12 @@ def bring_up(st) -> None:
     if isinstance(saved_theme, str) and saved_theme in ("light", "dark"):
         st.display.menu.set_state({"theme": saved_theme})
     saved_offset = st.cfg.get("menu_offset")
-    if isinstance(saved_offset, (list, tuple)) and len(saved_offset) == 2:
+    # Plain control window: the panel is fitted and centred - the
+    # fullscreen saved offset does not apply (and must not leak back
+    # into a window it was never measured for).
+    if getattr(st.display, "_plain", False):
+        st.display.menu.offset = [0, 0]
+    elif isinstance(saved_offset, (list, tuple)) and len(saved_offset) == 2:
         st.display.menu.offset = [int(saved_offset[0]), int(saved_offset[1])]
     saved_height = st.cfg.get("menu_height")
     if isinstance(saved_height, (int, float)) and saved_height > 0:
@@ -454,9 +529,12 @@ def bring_up(st) -> None:
         "settings": UI_STRINGS[st.lang].get("settings_title", "Settings"),
         "quit": UI_STRINGS[st.lang].get("exit", "Exit"),
     })
-    st.tray._set_state(nr=True, scale=st.work_scale)
+    st.tray._set_state(nr=not getattr(st, "degraded", False), scale=st.work_scale)
     st.tray.start()
     print("[main] tray icon started")
+    if getattr(st, "degraded", False):
+        print("[main] degraded mode: neural pass disabled (worker missing), "
+              "menu/tray/capture only")
 
     # Taskbar button: the overlay and the worker window are tool
     # windows, so the program lived only in the tray. A 1x1 APPWINDOW
@@ -513,13 +591,16 @@ def bring_up(st) -> None:
     # the GPU (NGX Upscaling).
     st.buf_full = np.empty((st.height, st.width, 4), dtype=np.uint8)
 
-    st.paused = False
+    # Degraded mode (no native worker): the neural pass stays off and
+    # the overlay shows the raw capture. Everything else - menu, tray,
+    # hotkeys - works.
+    st.paused = bool(getattr(st, "degraded", False))
     # The worker died and exhausted the restart budget: the pipeline is
     # stopped (no send/recv, no more restarts) and the overlay is hidden
     # so the desktop is not covered by a black window (issue #3: black
     # screen on a GPU where feature 18 cannot be created). Cleared when
     # the user turns NR back on.
-    st.worker_failed = False
+    st.worker_failed = bool(getattr(st, "degraded", False))
     st.frame_index = 0
     st.pts = 0
     st.output_rgba = None  # the last NR frame (for a screenshot); None until the first one
@@ -574,3 +655,10 @@ def bring_up(st) -> None:
     st.next_auto_revive = 0.0      # monotonic deadline; 0 = no revive pending
     st.consecutive_restarts = 0
     st.guide_fails = 0
+    # Degraded pacing: iterate at the monitor's own refresh rate instead
+    # of a fixed 60 Hz.
+    st.degraded_interval = 1.0 / _monitor_hz(
+        getattr(st.capture, "devicename", "") or "")
+    if getattr(st, "degraded", False):
+        print(f"[main] degraded pacing: monitor "
+              f"{1.0 / st.degraded_interval:.0f} Hz")

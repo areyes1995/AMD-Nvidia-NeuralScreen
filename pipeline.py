@@ -44,6 +44,20 @@ from settings_io import _work_size, hotkey_labels, nr_verdict
 from winapi import window_frame_rect
 
 
+def _degraded(st) -> bool:
+    """Degraded mode (no native worker): neural actions are disabled."""
+    return bool(getattr(st, "degraded", False) or getattr(st, "worker", None) is None)
+
+
+def _degraded_notice(st, what: str) -> None:
+    print(f"[main] {what} unavailable - degraded mode (worker missing)",
+          file=sys.stderr)
+    try:
+        st.display.alert("Not available: worker missing")
+    except Exception:
+        pass
+
+
 # Worker lines that always reach the shared log. These are the ones a user
 # needs to answer "which card is running the network, and did it come up":
 # the adapter list and the NS_GPU pick ([host]), the NGX create/init result
@@ -198,6 +212,13 @@ def shutdown_worker(worker: subprocess.Popen, stop: threading.Event | None = Non
     readline - the thread exits only on EOF after the process dies, or on
     stop).
     """
+    if worker is None:
+        if stop is not None:
+            try:
+                stop.set()
+            except Exception:
+                pass
+        return
     if worker.poll() is not None:
         if stop is not None:
             stop.set()
@@ -265,6 +286,9 @@ def teardown_pipeline(st) -> None:
 
 
 def rebuild_pipeline(st, note: str) -> None:
+    if _degraded(st):
+        _degraded_notice(st, "pipeline rebuild")
+        return
     """Build the worker, the shm and the overlay for the current size.
 
     The second half of what used to be _switch_monitor: it reads
@@ -406,9 +430,12 @@ def switch_monitor(st, new_monitor: int | str) -> None:
     with its theme/language/layout preserved.
 
     new_monitor is the dxcam output index, or a DXGI devicename
-    ('\\\\.\\DISPLAY1') - the menu hands over the devicename so the
+    ('\\.\\DISPLAY1') - the menu hands over the devicename so the
     switch is by identity, not by position.
     """
+    if _degraded(st):
+        _degraded_notice(st, "monitor switch")
+        return
     # Everything downstream of the size - the worker, the shm, the
     # overlay, the flags - is rebuilt by _rebuild_pipeline, which owns
     # those names; this function only picks the monitor and the size.
@@ -463,6 +490,9 @@ def switch_window(st, hwnd: int) -> None:
     worker is asked first (WGCW answers with the real size), and the
     pipeline is rebuilt for exactly that.
     """
+    if _degraded(st):
+        _degraded_notice(st, "window mode")
+        return
     if hwnd and not st.want_dda:
         st.display.alert(UI_STRINGS[st.lang]["win_fail"])
         print("[main] window mode needs capture in the worker "
@@ -551,6 +581,9 @@ def apply_spout(st, enabled: bool) -> None:
     rebuild. The picture size does not change, so the overlay, the
     menu and the capture source survive.
     """
+    if _degraded(st):
+        _degraded_notice(st, "Spout2 toggle")
+        return
     st.cfg["spout"] = bool(enabled)
     os.environ["NS_SPOUT"] = "1" if enabled else "0"
     settings_io.save_menu_layout(st)
@@ -591,6 +624,8 @@ def resize_window_live(st, frame_w: int, frame_h: int) -> bool:
     colour region is sized for the window the pipeline was built for, and a
     larger window would run off the end of it.
     """
+    if _degraded(st):
+        return False
     if st.window_hwnd is None or not st.dda_mode:
         return False
     try:
@@ -660,6 +695,9 @@ def apply_hdr(st, enabled: bool) -> None:
     changes nothing that can be seen - the capture comes back 8-bit and
     the worker says so in its "[hdr] capture=" line.
     """
+    if _degraded(st):
+        _degraded_notice(st, "HDR toggle")
+        return
     st.cfg["hdr"] = bool(enabled)
     os.environ["NS_HDR"] = "1" if enabled else "0"
     settings_io.save_menu_layout(st)
@@ -675,6 +713,9 @@ def apply_hdr(st, enabled: bool) -> None:
 
 
 def apply_motion_backend(st, value: str) -> None:
+    if _degraded(st):
+        _degraded_notice(st, "motion backend change")
+        return
     from motion_backend import normalize_backend
     value = normalize_backend(value)
     if value == normalize_backend(st.cfg.get("motion_backend")):
@@ -756,6 +797,9 @@ def apply_gpu(st, index: int) -> None:
     fails in the worker, with the reason in the log, rather than showing
     a black picture.
     """
+    if _degraded(st):
+        _degraded_notice(st, "GPU switch")
+        return
     previous = int(st.cfg.get("gpu", 0))
     if int(index) == previous:
         return
@@ -960,6 +1004,21 @@ def do_restart(st, new_scale: float, new_profile: str, new_params: dict,
     TimeoutError, B - BrokenPipeError, C - the control, OK).
     pygame/D3D11 had nothing to do with the crashes.
     """
+    if _degraded(st):
+        # Profiles/scales are still remembered locally so the menu does
+        # not look broken; nothing is sent to a worker.
+        st.work_scale = new_scale
+        st.cfg["profile"] = new_profile
+        st.params = new_params
+        if new_small is not None:
+            st.nr_small = new_small
+            st.cfg["nr_small"] = new_small
+        _degraded_notice(st, "settings apply")
+        try:
+            st.tray._set_state(scale=st.work_scale)
+        except Exception:
+            pass
+        return
     st.work_scale = new_scale
     st.cfg["profile"] = new_profile
     st.params = new_params

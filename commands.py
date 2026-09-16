@@ -547,6 +547,15 @@ def drain_commands(st) -> bool:
                             st.display.screen.get_width(),
                             st.display.screen.get_height())
                         cx, cy = st.display.menu.title_center()
+                        if getattr(st.display, "_plain", False):
+                            # Surface coords are window-client coords here:
+                            # convert to screen coords for the cursor.
+                            from ctypes import wintypes as _wt
+                            pt = _wt.POINT(int(cx), int(cy))
+                            if ctypes.windll.user32.ClientToScreen(
+                                    ctypes.c_void_p(st.display.get_hwnd()),
+                                    ctypes.byref(pt)):
+                                cx, cy = pt.x, pt.y
                         ctypes.windll.user32.SetCursorPos(cx, cy)
                     except Exception:
                         pass
@@ -560,6 +569,11 @@ def drain_commands(st) -> bool:
                     settings_io.save_menu_layout(st)
                 print(f"[main] overlay menu {'opened' if opened else 'closed'}")
             elif cmd == "toggle":
+                if getattr(st, "degraded", False):
+                    st.display.alert("Not available: worker missing")
+                    print("[main] NR toggle ignored - degraded mode (worker missing)",
+                          file=sys.stderr)
+                    continue
                 st.paused = not st.paused
                 if not st.paused:
                     st.work_frame = None  # a fresh grab after the pause
@@ -612,6 +626,11 @@ def drain_commands(st) -> bool:
                     "fg_on" if state else "fg_off",
                     "DLSS FG ON" if state else "DLSS FG OFF"))
             elif cmd == "record":
+                if getattr(st, "degraded", False):
+                    st.display.alert("Not available: worker missing")
+                    print("[main] recording ignored - degraded mode (worker missing)",
+                          file=sys.stderr)
+                    continue
                 # Num0: record the NR frame into an MP4. The frames
                 # are requested from the worker through
                 # FRAME_FLAG_WANT_PIXELS (the screenshot mechanism,

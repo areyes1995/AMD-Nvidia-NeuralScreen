@@ -354,6 +354,8 @@ class _Pipeline:
         "warmup",
         "effective_warmup",
         "hdr_alerted",
+        "degraded",
+        "degraded_interval",
     )
 
 
@@ -473,6 +475,8 @@ def main() -> int:
         last_fps = 0.0
         last_perf_log = time.monotonic()
         motion_status = MotionBackendStatus()
+        degraded_menu_sync = 0.0  # menu set_state throttle in degraded mode
+        degraded_diag = 0.0  # periodic visibility diagnostics in degraded mode
         # Stage timings: mean ms over PERF_LOG_INTERVAL (the [perf] log)
         st.perf = {k: [] for k in PERF_KEYS}
 
@@ -486,6 +490,101 @@ def main() -> int:
 
             if not commands.drain_commands(st):
                 break
+
+            # Degraded mode (no native worker): a plain control window
+            # with the menu - tray/taskbar/hotkeys alive, neural
+            # functions disabled. An ordinary window, so the desktop
+            # stays interactive and the program is always visible.
+            if getattr(st, "degraded", False):
+                commands.drain_save_dialog(st)
+                if st.frame_index == 0:
+                    st.display.alert("Degraded: worker missing - neural pass disabled",
+                                     duration=6.0)
+                    print("[main] degraded mode: control window, "
+                          "neural pass disabled")
+                if st.display.menu.visible:
+                    for ev in pygame.event.get():
+                        if ev.type == pygame.QUIT:
+                            st.running = False
+                            break
+                        for action in st.display.menu.handle_event(ev):
+                            commands.apply_menu_action(st, action)
+                    if not st.running:
+                        break
+                    if not st.display.menu.dragging and now - degraded_menu_sync >= 0.1:
+                        st.display.menu.set_state(settings_io.menu_payload(st))
+                        degraded_menu_sync = now
+                # Screenshot on demand: one direct grab, no pipeline.
+                if st.pending_shot is not None:
+                    shot = _safe_grab()
+                    if shot is None:
+                        st.pending_shot = None
+                        st.display.alert("No frame yet")
+                    else:
+                        commands.freeze_screenshot_frame(
+                            st, np.ascontiguousarray(shot, dtype=np.uint8))
+                t0 = time.perf_counter()
+                st.display.set_hud({
+                    "fps": last_fps,
+                    "display_fps": None,
+                    "status": "DEGRADED - NO WORKER",
+                    "resolution": f"{st.width}x{st.height}",
+                    "profile": st.cfg["profile"],
+                    "params": {},
+                    "frames": st.frame_index,
+                    "recording": False,
+                    "rec_seconds": 0.0,
+                    "rec_indicator": bool(st.cfg.get("rec_indicator", True)),
+                })
+                st.display.show_plain()
+                _perf("show", t0)
+                st.frame_index += 1
+                if startup_pending and st.frame_index >= 2:
+                    startup_pending = False
+                    if st.startup_menu:
+                        st.display.menu.set_state(settings_io.menu_payload(st))
+                        st.display.menu.visible = True
+                        st.display.set_menu_opaque(True)
+                        st.display.set_menu_input(True)
+                        st.display.show_plain()
+                        try:
+                            panel = st.display.menu.panel_rect
+                            print(f"[main] menu opened at startup (degraded) "
+                                  f"at {panel}")
+                        except Exception:
+                            print("[main] menu opened at startup (degraded)")
+                    else:
+                        st.display.alert(UI_STRINGS[st.lang]["started"], 3.5)
+                if now - degraded_diag >= 5.0:
+                    degraded_diag = now
+                    try:
+                        hwnd = st.display.get_hwnd()
+                        rect = wintypes.RECT()
+                        ok = bool(ctypes.windll.user32.GetWindowRect(
+                            ctypes.c_void_p(hwnd), ctypes.byref(rect)))
+                        geo = (f"{rect.right - rect.left}x{rect.bottom - rect.top}"
+                               f"@({rect.left},{rect.top})" if ok else "unknown")
+                    except Exception:
+                        hwnd, geo = 0, "unknown"
+                    try:
+                        panel = st.display.menu.panel_rect
+                    except Exception:
+                        panel = "unknown"
+                    print(f"[degraded] menu visible={st.display.menu.visible} "
+                          f"page={st.display.menu.page} panel={panel} "
+                          f"hwnd=0x{hwnd:X} win={geo} "
+                          f"plain={getattr(st.display, '_plain', False)} "
+                          f"alerts={len(getattr(st.display, '_alerts', []))}")
+                st.work_frame = None
+                time.sleep(st.degraded_interval)
+                fps_window.append(time.perf_counter() - loop_start)
+                if len(fps_window) > 120:
+                    fps_window.pop(0)
+                if now - last_log >= FPS_LOG_INTERVAL:
+                    last_fps = len(fps_window) / sum(fps_window) if fps_window else 0.0
+                    print(f"[main] DEGRADED | FPS {last_fps:5.1f} | frames {st.frame_index}")
+                    last_log = now
+                continue
 
             # The worker is gone (restart budget exhausted): the pipeline is
             # stopped. Commands still run (Num1 revives it), but no frame is
