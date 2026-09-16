@@ -23,7 +23,7 @@ import tempfile
 
 
 def main():
-    native = (ROOT / "native" / "nvofa.inl").read_text(encoding="utf-8-sig")
+    native = (ROOT / "nvidia_mode" / "native" / "nvofa.inl").read_text(encoding="utf-8-sig")
     dump = native.split("static void DumpNvofa(VideoState &v)", 2)[-1]
     assert "if (!pair.first) continue;" in dump, \
         "an ordinary NVOFA dump must skip the opt-in cost texture when absent"

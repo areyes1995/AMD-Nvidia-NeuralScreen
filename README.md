@@ -64,7 +64,7 @@ The program detects your graphics hardware at startup — see the
   `Not available: worker missing`.
 
 Degraded mode also covers a machine where the native files are missing
-(`native/nvngx.dll`, `nvngx_dlssnr.dll`): same window, same disabled
+(`nvidia_mode/native/nvngx.dll`, `nvngx_dlssnr.dll`): same window, same disabled
 functions, and `System using:` still names your card.
 
 ## Install
@@ -160,7 +160,7 @@ Chinese, Japanese and Korean.
 ## Swapping a runtime
 
 Everything ships in the archive. To run your own runtime build (a newer
-DLSS-G, say), drop the DLL into **`native/libraries/`** — it wins over the
+DLSS-G, say), drop the DLL into **`nvidia_mode/native/libraries/`** — it wins over the
 bundled copy; `nr_dll` / `NS_NR_DLL` remain the NR override.
 
 ## Recording and screenshots
@@ -185,7 +185,7 @@ cannot appear in the image. Set **Screenshot folder...** once to start there.
 
 **Nothing appears after launch.** Check `NeuralScreen.log` next to the
 program — it names the cause. The commonest is a missing
-`native\nvngx_dlssnr.dll`.
+`nvidia_mode\native\nvngx_dlssnr.dll`.
 
 **The overlay is invisible in a game.** True fullscreen cannot have anything
 drawn over it — a Windows rule. Switch the game to *borderless*.

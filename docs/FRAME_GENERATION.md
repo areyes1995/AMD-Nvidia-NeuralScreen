@@ -1,7 +1,7 @@
 # Experimental desktop frame generation
 
 Off by default. Enable Frame Generation in the processing menu and select
-an output multiplier from 2x to 4x. Requires `native/nvngx_dlssg.dll`, supplied
+an output multiplier from 2x to 4x. Requires `nvidia_mode/native/nvngx_dlssg.dll`, supplied
 separately from the source repository.
 
 Generated frames follow neural rendering and optional SR. A separate presenter
@@ -21,6 +21,6 @@ Validation:
 - `runtime/python.exe tests/test_framegen_controls.py`
 - `runtime/python.exe tests/test_frame_generation.py --run`
 - `runtime/python.exe tests/test_frame_generation.py --hdr --dynamic --sr --check-pixels`
-- `native/test-hdr.bat`
+- `nvidia_mode/native/test-hdr.bat`
 
 Native tests require an NVIDIA GPU; HDR tests require an HDR-enabled display.

@@ -6,7 +6,7 @@ open the menu (Windows convention: right click for the menu, left for the
 default). Commands go into a queue.Queue that the main loop drains.
 
 The icon is the channel avatar (a black turbine fan with a gold "P"): the
-same file the launcher and the taskbar button use, native/neuralscreen.ico.
+same file the launcher and the taskbar button use, nvidia_mode/native/neuralscreen.ico.
 The .ico rather than a single image because it carries a frame drawn for
 every size - the tray asks for 16 or 24 px, and at that size the white rim
 that separates the logo from a dark taskbar is a matter of one pixel, which
@@ -36,7 +36,8 @@ def _make_icon(size: int = 64) -> Image.Image:
     requested size is taken and shrunk if it has to be - never blown up from
     a smaller one, which is what turns the rim into a grey halo.
     """
-    ico = Path(__file__).resolve().parent / "native" / "neuralscreen.ico"
+    from paths import NATIVE_DIR
+    ico = NATIVE_DIR / "neuralscreen.ico"
     if ico.is_file():
         try:
             img = Image.open(ico)

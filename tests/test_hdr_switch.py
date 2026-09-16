@@ -82,7 +82,7 @@ def main() -> int:
     # 2. The worker's own default. HdrEnabled() is what every HDR decision
     #    in the worker hangs off, and it must need a "1" - not merely "not
     #    a 0". test_wgc_capture and the other fixtures run a bare worker.
-    src = (BASE / "native" / "hdr_display.h").read_text(encoding="utf-8")
+    src = (BASE / "nvidia_mode" / "native" / "hdr_display.h").read_text(encoding="utf-8")
     if 'strcmp(value, "1") == 0' not in src:
         failures.append("the worker's HdrEnabled() no longer defaults to off "
                         "- a worker started without NS_HDR would change format")

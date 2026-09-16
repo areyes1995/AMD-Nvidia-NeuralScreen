@@ -556,8 +556,8 @@ def bring_up(st) -> None:
     st.tray.start()
     print("[main] tray icon started")
     if getattr(st, "degraded", False):
-        print("[main] degraded mode: neural pass disabled (worker missing), "
-              "menu/tray/capture only")
+        print(f"[main] degraded mode ({getattr(st, 'degraded_reason', '?')}): "
+              f"neural pass disabled, menu/tray/capture only")
 
     # Taskbar button: the overlay and the worker window are tool
     # windows, so the program lived only in the tray. A 1x1 APPWINDOW

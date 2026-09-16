@@ -25,6 +25,11 @@ from i18n import STRINGS as UI_STRINGS
 from protocol import WORK_MAX_H, WORK_MAX_W  # noqa: F401
 from winapi import list_capturable_windows
 from resolution_limits import safe_processing_size
+# The NR parameter vocabulary (NVIDIA backend); re-exported so every
+# `from settings_io import ...` keeps working unchanged.
+from nvidia_mode.python.params import (  # noqa: F401
+    _PRESET_INT_KEYS, PARAM_RANGE, PRESET_KEYS, PROFILES,
+    clamp_param, param_range)
 
 
 def _work_size(width: int, height: int, scale: float) -> tuple[int, int]:
@@ -115,7 +120,7 @@ def _set_autostart(enabled: bool) -> bool:
         return False
 
 
-# The version shown in the menu header. Kept in sync with native/launcher.rc
+# The version shown in the menu header. Kept in sync with nvidia_mode/native/launcher.rc
 # (FileVersion/ProductVersion) and build_release_zip.py at release time.
 APP_VERSION = "1.12.0"
 
@@ -169,16 +174,8 @@ CHANNEL_LABEL = "@perseval_BLR"
 # The other reason is arithmetic: skin_structure is inert without it. With
 # the mask off in two of the four profiles, the fourth slider in the menu
 # did nothing at all in those two.
-PROFILES = {
-    "Faithful": dict(style=0, auto_mask=1,
-                     intensity=0.70, local_tone=0.25, local_structure=0.75, skin_structure=-1.0),
-    "Natural": dict(style=1, auto_mask=1,
-                    intensity=1.00, local_tone=0.50, local_structure=1.00, skin_structure=-1.0),
-    "Strong / Cinematic": dict(style=2, auto_mask=1,
-                               intensity=1.00, local_tone=0.90, local_structure=1.50, skin_structure=1.0),
-    "Extreme / Overdrive": dict(style=2, auto_mask=1,
-                                intensity=1.00, local_tone=1.50, local_structure=1.50, skin_structure=1.5),
-}
+#
+# PROFILES lives in nvidia_mode/python/params.py now - re-exported below.
 
 
 WORK_SCALE_MIN = 0.1
@@ -203,43 +200,14 @@ WORK_SCALE_MIN = 0.1
 #                    pins the ceilings).
 #   skin_structure   inert unless auto_mask is on, and -1 is "off".
 #                    2.5 measured alive on 15.09; the top moved 2.0 -> 2.5.
-PARAM_RANGE = {
-    "intensity": (0.0, 1.0),
-    "local_tone": (0.0, 2.0),
-    "local_structure": (0.0, 2.0),
-    "skin_structure": (-1.0, 2.5),
-}
-
-
-def param_range(key: str) -> tuple:
-    """The (low, high) a parameter is allowed. Unknown keys get the widest."""
-    return PARAM_RANGE.get(key, (0.0, 1.5))
-
-
-def clamp_param(key: str, value: float) -> float:
-    """Pull a value into range - for configs written before the range was."""
-    lo, hi = param_range(key)
-    return min(max(float(value), lo), hi)
-
-
-# The four sliders a user preset stores. The same keys as PROFILES carries,
-# minus the NGX plumbing (profile/preset/style/auto_mask/ui_correction stay
-# tied to the built-in profile the preset was saved from).
-PRESET_KEYS = ("intensity", "local_tone", "local_structure", "skin_structure")
+# PARAM_RANGE, param_range, clamp_param and PRESET_KEYS live in
+# nvidia_mode/python/params.py now - re-exported below.
 
 
 DEFAULT_LANG = "en"
 
 
-# The NGX plumbing a preset carries along with the four sliders: the range
-# it must be in, and what to use when it is not there at all. Presets saved
-# by builds up to 1.8.2 also carry profile/preset/ui_correction; those are
-# read and thrown away, because they do nothing (see PARAM_RANGE). A preset
-# saved by this build does not have them, and must still load.
-_PRESET_INT_KEYS = {
-    "style": (0, 2, 1),
-    "auto_mask": (0, 1, 0),
-}
+# _PRESET_INT_KEYS lives in nvidia_mode/python/params.py now - re-exported below.
 
 
 def load_presets(cfg: dict) -> dict:

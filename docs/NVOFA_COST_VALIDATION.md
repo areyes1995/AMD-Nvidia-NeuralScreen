@@ -16,7 +16,7 @@ CPU-skip decisions. It is independent of any cost threshold.
 ## Reproduction
 
 Hardware: RTX 5080, NVIDIA driver 616.64, Windows build 26200, 2026-09-14.
-Build with `cmd /c native\build-host.bat`, then run:
+Build with `cmd /c nvidia_mode\native\build-host.bat`, then run:
 
 ```
 runtime\python.exe tests\experiment_nvofa_confidence.py --run

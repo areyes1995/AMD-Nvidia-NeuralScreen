@@ -86,7 +86,7 @@ profiling on/off. The DDA pixel comparison initially failed twice and passed
 on an isolated diagnostic rerun; clean `main` passed separately. This remains
 an intermittent desktop-capture test result, not a clean full-suite claim.
 
-Run from the repository root after `native\build-host.bat`:
+Run from the repository root after `nvidia_mode\native\build-host.bat`:
 
 ```
 runtime\python.exe tests\test_nvofa_controls.py
@@ -116,4 +116,4 @@ It synchronizes and writes files, so it must be off for timings.
 `NS_NVOFA_TEST_FAIL_AT=<frame>` is the failure-injection hook used by the test.
 
 API documentation: [NVIDIA Optical Flow programming guide](https://docs.nvidia.com/video-technologies/optical-flow-sdk/nvofa-programming-guide/index.html).
-Header provenance and licenses: [native/include/nvofa/README.md](../native/include/nvofa/README.md).
+Header provenance and licenses: [nvidia_mode/native/include/nvofa/README.md](../nvidia_mode/native/include/nvofa/README.md).

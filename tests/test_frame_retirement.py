@@ -24,7 +24,7 @@ from paths import WORKER_EXE
 
 
 def check_hdr_transition_guard():
-    source = (ROOT / 'native/dlss5-feed-host64.cpp').read_text(encoding='utf-8')
+    source = (ROOT / 'nvidia_mode/native/dlss5-feed-host64.cpp').read_text(encoding='utf-8')
     # Without the declaration: `got` stopped being const when the
     # WANT_PIXELS dry-spell retry was added, and what this check is about is
     # the ORDER - the frame's format has to be known before the deferral is
@@ -100,8 +100,8 @@ int main() {
     assert(g_frame_stamp.reported && g_frame_record_count == 0);
     return 0;
 }
-'''.replace('SOURCE', (ROOT / 'native/dlss5-feed-host64.cpp').as_posix()), encoding='utf-8')
-        native = ROOT / 'native'
+'''.replace('SOURCE', (ROOT / 'nvidia_mode/native/dlss5-feed-host64.cpp').as_posix()), encoding='utf-8')
+        native = ROOT / 'nvidia_mode/native'
         build = work / 'build.bat'
         build.write_text(f'''@echo off
 call "{vcvars}" >nul

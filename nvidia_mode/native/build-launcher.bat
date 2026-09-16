@@ -8,7 +8,7 @@ call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliar
 rc /nologo /fo launcher.res launcher.rc
 if errorlevel 1 exit /b 1
 cl /nologo /O2 /EHsc /W3 /MD launcher.cpp launcher.res ^
-   /Fe:..\NeuralScreen.exe ^
+   /Fe:..\..\NeuralScreen.exe ^
    /link /SUBSYSTEM:WINDOWS shlwapi.lib user32.lib kernel32.lib
 if errorlevel 1 exit /b 1
 del launcher.obj launcher.res >nul 2>&1

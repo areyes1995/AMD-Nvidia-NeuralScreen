@@ -135,7 +135,7 @@ def run_case(name, positions, textured=True):
                NS_MOTION_BACKEND='nvofa', NS_NVOFA_DUMP=str(output),
                NS_NVOFA_COST='1')
     env.pop('NS_NVOFA_TEST_FAIL_AT', None)
-    p = subprocess.Popen([str(ROOT/'native/nvngx.dll'), '--live'], cwd=ROOT/'native', env=env,
+    p = subprocess.Popen([str(ROOT/'nvidia_mode/native/nvngx.dll'), '--live'], cwd=ROOT/'nvidia_mode/native', env=env,
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                          creationflags=subprocess.CREATE_NO_WINDOW)
     logs = []

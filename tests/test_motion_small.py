@@ -89,7 +89,7 @@ def send_frame(worker, index: int, frame: np.ndarray, motion: np.ndarray,
 
 def main() -> int:
     failures = []
-    source = (BASE / "native" / "dlss5-feed-host64.cpp").read_text(
+    source = (BASE / "nvidia_mode" / "native" / "dlss5-feed-host64.cpp").read_text(
         encoding="utf-8-sig")
     motion_only = source.split(
         "static bool UploadMotionOnly", 1)[-1].split(

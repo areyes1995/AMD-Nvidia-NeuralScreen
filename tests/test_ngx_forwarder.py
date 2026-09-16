@@ -6,7 +6,7 @@ substring "nvngx.dll", it refuses with FAIL_PlatformError (0xBAD00002) before
 it even reads the arguments.
 
 R8 settled what that means for the worker: the worker IS an executable named
-nvngx.dll (native\nvngx.dll), so its own path carries the substring and the
+nvngx.dll (nvidia_mode\native\nvngx.dll), so its own path carries the substring and the
 calls leave the worker itself - the forwarding layer is the escape hatch
 (NS_FORWARDER=1), not the default. Measured live: ~2400 frames through the
 direct path, zero restarts.
@@ -95,7 +95,7 @@ def main() -> int:
         return 1
     if not FORWARDER.is_file():
         print(f"FAIL: the forwarder is not built: {FORWARDER}")
-        print("      run native\\build-host.bat")
+        print("      run nvidia_mode\\native\\build-host.bat")
         return 1
     if "nvngx.dll" not in FORWARDER.name:
         failures.append(f"the forwarder is named {FORWARDER.name!r} - the "

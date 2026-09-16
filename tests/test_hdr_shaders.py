@@ -1,12 +1,12 @@
 """The HDR shaders, compiled and run - on WARP, so anywhere.
 
 hdr_gpu.cpp (PR #36) takes the two shader sources the worker actually
-compiles - kHdrCaptureHlsl and kHdrCompositeHlsl, out of native/hdr_shaders.h -
+compiles - kHdrCaptureHlsl and kHdrCompositeHlsl, out of nvidia_mode/native/hdr_shaders.h -
 runs them on the WARP software device and reads the pixels back. No HDR
 monitor, no NVIDIA runtime, no NGX: it checks the arithmetic of the HDR path,
 which is the part that decides whether the picture is right.
 
-It was reachable only by hand (native\\test-hdr.bat), and a check nobody runs
+It was reachable only by hand (nvidia_mode\native\test-hdr.bat), and a check nobody runs
 is a check nobody has. This wrapper puts it in the suite: the suite already
 insists on a freshly built worker, so the machine running it has the compiler.
 
@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
-BAT = BASE / "native" / "test-hdr.bat"
+BAT = BASE / "nvidia_mode" / "native" / "test-hdr.bat"
 
 
 def main() -> int:
@@ -42,7 +42,7 @@ def main() -> int:
             print(f"    {line.strip()}")
     if "is not recognized" in out or "vcvars64" in out and r.returncode != 0:
         print("FAIL: no Visual Studio build tools - the same ones the worker "
-              "is built with (native\\build-host.bat)")
+              "is built with (nvidia_mode\\native\\build-host.bat)")
         return 1
     if r.returncode != 0 or "PASS" not in (r.stdout or ""):
         print((r.stderr or "").strip()[-600:])

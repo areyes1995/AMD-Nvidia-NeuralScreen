@@ -48,8 +48,8 @@ def run(hdr=False, dynamic=False, check_pixels=False, sr=False):
     if dumps:
         assert hdr, "pixel check requires --hdr"
         env["NS_FG_DUMP"] = dumps.name
-    worker = subprocess.Popen([str(ROOT / "native/nvngx.dll"), "--live"],
-        cwd=ROOT / "native", env=env,
+    worker = subprocess.Popen([str(ROOT / "nvidia_mode/native/nvngx.dll"), "--live"],
+        cwd=ROOT / "nvidia_mode/native", env=env,
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         creationflags=subprocess.CREATE_NO_WINDOW)
     logs = []

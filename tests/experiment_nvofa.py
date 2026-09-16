@@ -42,7 +42,7 @@ def run(mode,quality=False,round_id=0,static=False,failure=False,hdr=True,resize
     else:env.pop('NS_NVOFA_TEST_FAIL_AT',None)
     if quality and mode=='nvofa':env['NS_NVOFA_DUMP']=str(folder)
     else:env.pop('NS_NVOFA_DUMP',None)
-    p=subprocess.Popen([str(ROOT/'native/nvngx.dll'),'--live'],cwd=ROOT/'native',env=env,
+    p=subprocess.Popen([str(ROOT/'nvidia_mode/native/nvngx.dll'),'--live'],cwd=ROOT/'nvidia_mode/native',env=env,
           stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,creationflags=subprocess.CREATE_NO_WINDOW)
     logs=[];drain=threading.Thread(target=lambda:logs.extend(iter(p.stderr.readline,b'')),daemon=True);drain.start()
     watchdog=threading.Timer(100,p.kill);watchdog.start()

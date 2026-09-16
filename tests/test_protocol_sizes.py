@@ -26,7 +26,7 @@ sys.path.insert(0, str(BASE))
 
 import main as ns_main  # noqa: E402
 
-CPP = BASE / "native" / "dlss5-feed-host64.cpp"
+CPP = BASE / "nvidia_mode" / "native" / "dlss5-feed-host64.cpp"
 ASSERT = re.compile(
     r'static_assert\(sizeof\((\w+)\)\s*==\s*(\d+),\s*"[^"]*!=\s*(\w+)"\)')
 

@@ -22,8 +22,8 @@ echo [NeuralScreen] Python: %NS_PY%
 rem --- NGX runtime: 165 MB redistributable, ships in the release archive -----
 rem Degraded mode: without it the program still opens (menu/tray/capture)
 rem with the neural pass disabled.
-if not exist "%~dp0native\nvngx_dlssnr.dll" (
-    echo [NeuralScreen] native\nvngx_dlssnr.dll not found - degraded mode,
+if not exist "%~dp0nvidia_mode\native\nvngx_dlssnr.dll" (
+    echo [NeuralScreen] nvidia_mode\native\nvngx_dlssnr.dll not found - degraded mode,
     echo neural pass disabled. Re-download the release archive for full
     echo functionality, or see README.md, section "What you need".
 )
@@ -31,12 +31,12 @@ if not exist "%~dp0native\nvngx_dlssnr.dll" (
 rem --- Worker: build artefact, not stored in git ----------------------------
 rem Degraded mode: without it the program still opens (menu/tray/capture)
 rem with the neural pass disabled.
-if not exist "%~dp0native\nvngx.dll" (
-    echo [NeuralScreen] native\nvngx.dll not found - building it.
-    call "%~dp0native\build-host.bat"
+if not exist "%~dp0nvidia_mode\native\nvngx.dll" (
+    echo [NeuralScreen] nvidia_mode\native\nvngx.dll not found - building it.
+    call "%~dp0nvidia_mode\native\build-host.bat"
     if errorlevel 1 (
         echo [NeuralScreen] Worker build failed - degraded mode,
-        echo neural pass disabled. See native\build-host.bat.
+        echo neural pass disabled. See nvidia_mode\native\build-host.bat.
     )
 )
 

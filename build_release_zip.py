@@ -26,18 +26,18 @@ TARGET_ARCHS = "RTX 30/40/50 (sm_86/89/120 kernels, spoof 0x1B0; RTX 20 cannot r
 files = subprocess.check_output(["git", "ls-files"], text=True).splitlines()
 extra = [
     # The BYO folder doc ships so user installs have the drop location ready.
-    "native/libraries/README.md",
-    "native/nvngx_dlssg.dll",
+    "nvidia_mode/native/libraries/README.md",
+    "nvidia_mode/native/nvngx_dlssg.dll",
     "resolution_limits.py",
     "NeuralScreen.exe",
     "NeuralScreen.vbs",
     "NeuralScreen-diag.vbs",
     "README.ru.md",
-    "native/nvngx.dll",
+    "nvidia_mode/native/nvngx.dll",
     # The module the NGX calls leave from. Its file name is what the
     # feature library checks; without it Neural Rendering does not start.
-    "native/nvngx.dll_ns-forwarder.dll",
-    "native/nvngx_dlssnr.dll",
+    "nvidia_mode/native/nvngx.dll_ns-forwarder.dll",
+    "nvidia_mode/native/nvngx_dlssnr.dll",
 ]
 # tcl/tk stays out of the archive: the tkinter settings window is gone and the
 # whole interface lives in the overlay menu. Nothing in the project imports
@@ -94,18 +94,18 @@ DEV_ONLY = {
     # scripts are for the repository, not for the end user. The release
     # needs only the two DLLs (Spout.dll, SpoutDX.dll) and the bridge
     # sources that the worker links.
-    "native/include/spout/",
-    "native/spout_bridge.h",
-    "native/spout_bridge.cpp",
-    "native/spout_sender.cpp",
-    "native/spout_receiver.cpp",
-    "native/spout_roundtrip.cpp",
-    "native/spout_compile_check.cpp",
-    "native/spout_adapter_check.cpp",
-    "native/build-spout-test.bat",
-    "native/build-spout-check.bat",
-    "native/build-spout-adapter.bat",
-    "native/SpoutDX.lib",
+    "nvidia_mode/native/include/spout/",
+    "nvidia_mode/native/spout_bridge.h",
+    "nvidia_mode/native/spout_bridge.cpp",
+    "nvidia_mode/native/spout_sender.cpp",
+    "nvidia_mode/native/spout_receiver.cpp",
+    "nvidia_mode/native/spout_roundtrip.cpp",
+    "nvidia_mode/native/spout_compile_check.cpp",
+    "nvidia_mode/native/spout_adapter_check.cpp",
+    "nvidia_mode/native/build-spout-test.bat",
+    "nvidia_mode/native/build-spout-check.bat",
+    "nvidia_mode/native/build-spout-adapter.bat",
+    "nvidia_mode/native/SpoutDX.lib",
 }
 
 
@@ -141,11 +141,11 @@ def _skip(path: str) -> bool:
     # Spout2 SDK dev baggage: the headers, the test tools and the build
     # scripts are for the repository, not for the end user. The release
     # needs only the two DLLs (Spout.dll, SpoutDX.dll).
-    if norm.startswith("native/include/spout/") or norm.startswith("native/spout_"):
+    if norm.startswith("nvidia_mode/native/include/spout/") or norm.startswith("nvidia_mode/native/spout_"):
         return True
-    if norm.startswith("native/build-spout-"):
+    if norm.startswith("nvidia_mode/native/build-spout-"):
         return True
-    if norm == "native/SpoutDX.lib":
+    if norm == "nvidia_mode/native/SpoutDX.lib":
         return True
     # The worker's source, the NGX headers and the import library are not
     # something the program runs: the archive carries the built DLLs. It could
@@ -157,9 +157,9 @@ def _skip(path: str) -> bool:
     # anything - both have a fallback - so a build would ship with the wrong
     # icons and nothing would say why. Named one by one rather than by
     # extension: the rule is "these two files", and a .png dropped into
-    # native/ tomorrow is still developer baggage.
-    RUNTIME_ASSETS = ("native/neuralscreen.ico",)
-    if (norm.startswith("native/") and not norm.endswith(".dll")
+    # nvidia_mode/native/ tomorrow is still developer baggage.
+    RUNTIME_ASSETS = ("nvidia_mode/native/neuralscreen.ico",)
+    if (norm.startswith("nvidia_mode/native/") and not norm.endswith(".dll")
             and norm not in RUNTIME_ASSETS):
         return True
     if "/test/" in norm or "/tests/" in norm or "/testing/" in norm:
@@ -257,7 +257,7 @@ def dll_architectures(path: str) -> set[int]:
     return set(found)
 
 
-dll_path = Path("native/nvngx_dlssnr.dll")
+dll_path = Path("nvidia_mode/native/nvngx_dlssnr.dll")
 dll_data = dll_path.read_bytes()
 dll_sha = hashlib.sha256(dll_data).hexdigest()
 print(f"runtime: {dll_path.name} {len(dll_data)} bytes, sha256 {dll_sha[:16]}...")

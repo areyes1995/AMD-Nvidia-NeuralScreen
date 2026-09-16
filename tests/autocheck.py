@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent  # the project root (tests/ lives inside it)
 FAILS = []
 
-NATIVE = ROOT / "native"
+NATIVE = ROOT / "nvidia_mode" / "native"
 NATIVE_INCLUDE_DIRS = (NATIVE, NATIVE / "include", NATIVE / "src")
 NATIVE_INCLUDE_RE = re.compile(
     r'^\s*#\s*include\s*([<"])([^>"]+)[>"]', re.MULTILINE)
@@ -209,14 +209,14 @@ def zip_integrity():
         "NeuralScreen.exe",
         "TECHNICAL.md", "TECHNICAL.ru.md",
         "README.md", "README.ru.md", "NeuralScreen.vbs", "NeuralScreen.bat",
-        "native/nvngx.dll", "native/nvngx_dlssnr.dll",
+        "nvidia_mode/native/nvngx.dll", "nvidia_mode/native/nvngx_dlssnr.dll",
         # Neural Rendering does not start without it: the NGX calls
         # have to leave a module whose path carries "nvngx.dll".
-        "native/nvngx.dll_ns-forwarder.dll",
+        "nvidia_mode/native/nvngx.dll_ns-forwarder.dll",
         # Loaded at run time, and both have a silent fallback: left out
         # of the archive the program ships with the wrong icons and says
         # nothing about it.
-        "native/neuralscreen.ico",
+        "nvidia_mode/native/neuralscreen.ico",
         # The interface faces travel with the program: a Windows that
         # lacks Segoe UI (or ships a different cut of it) would draw
         # the menu in whatever it has.
@@ -230,7 +230,7 @@ def zip_integrity():
         if missing:
             return False, f"missing from the archive: {missing}"
         # the worker in the archive carries the hook
-        dll = z.read("native/nvngx.dll")
+        dll = z.read("nvidia_mode/native/nvngx.dll")
         if b"NS_ARCH_SPOOF" not in dll:
             return False, "nvngx.dll in the archive has no hook"
         # the worker in the archive carries the window-capture mode (WGCW)
@@ -288,7 +288,7 @@ def zip_integrity():
                                        cwd=ROOT, text=True).strip()
         if f"commit: {head}" not in vt:
             return False, "VERSION.txt commit != HEAD - rebuilt from a dirty tree?"
-        zip_dll = z.read("native/nvngx_dlssnr.dll")
+        zip_dll = z.read("nvidia_mode/native/nvngx_dlssnr.dll")
         zsha = hashlib.sha256(zip_dll).hexdigest()
         if f"sha256 {zsha}" not in vt:
             return False, "VERSION.txt runtime sha != the DLL inside the archive"
@@ -326,7 +326,7 @@ def gpuinfo_works():
 
 def spoof_default_on():
     """The spoof is on by default: ArchSpoofRequested has no =1 requirement."""
-    cpp = (ROOT / "native" / "dlss5-feed-host64.cpp").read_text(encoding="utf-8-sig")
+    cpp = (ROOT / "nvidia_mode" / "native" / "dlss5-feed-host64.cpp").read_text(encoding="utf-8-sig")
     start = cpp.find("static bool ArchSpoofRequested()")
     end = cpp.find("static int SetupArchSpoof()")
     body = cpp[start:end]

@@ -472,7 +472,7 @@ NVIDIA first — on a hybrid laptop the integrated GPU must not win just
 by being first in DXGI order — otherwise the first discrete card.
 `startup.bring_up` logs the verdict (`System using: AMD RX 9070 XT
 (neural pass: unavailable)`) and sets the gate: no NVIDIA, or a missing
-`native/nvngx.dll`, means degraded (reasons `no_nvidia` / `no_worker`).
+`nvidia_mode/native/nvngx.dll`, means degraded (reasons `no_nvidia` / `no_worker`).
 With NVIDIA present and the files in place the pipeline below runs
 exactly as before — nothing on the normal path changed.
 
@@ -499,16 +499,16 @@ missing` notice instead of a crash.
 ## Building the worker
 
 ```
-native\build-host.bat
+nvidia_mode\native\build-host.bat
 ```
 
 Requires MSVC 2022 Build Tools at
 `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools`. The script
-builds `dlss5-feed-host64.cpp` into `native/nvngx.dll`, linking
-`native/lib/Windows_x86_64/x64/nvsdk_ngx_d.lib`. NGX headers are in
-`native/include/`.
+builds `dlss5-feed-host64.cpp` into `nvidia_mode/native/nvngx.dll`, linking
+`nvidia_mode/native/lib/Windows_x86_64/x64/nvsdk_ngx_d.lib`. NGX headers are in
+`nvidia_mode/native/include/`.
 
-The artifact `native/nvngx.dll` is not committed to the repo.
+The artifact `nvidia_mode/native/nvngx.dll` is not committed to the repo.
 
 ## Frame Generation on the desktop (opt-in)
 
@@ -525,12 +525,12 @@ The FG runtime (`nvngx_dlssg.dll`) ships in the archive - the public
 310.9.1.0 redistributable, NVIDIA-signed, included unmodified. The licensing
 position is stated in the README notice: research use, takedown on request.
 Absent the DLL, the switch refuses politely and nothing breaks; a different
-build drops into `native/libraries/`.
+build drops into `nvidia_mode/native/libraries/`.
 
 ## Runtimes and the libraries folder
 
 The NR runtime ships in the archive; the optional FG one is user-supplied in
-`native/libraries/`, which takes priority over `native/` for every runtime
+`nvidia_mode/native/libraries/`, which takes priority over `nvidia_mode/native/` for every runtime
 the loader looks for. There is no network access: the former auto-updater was
 removed, and with it a latent defect where the `library_updates_enabled`
 toggle never persisted.

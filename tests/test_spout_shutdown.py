@@ -1,7 +1,7 @@
 """Audit (C++ report): SpoutBridgeShutdown must be called on the exit path.
 
 spout_bridge.cpp defines SpoutBridgeShutdown (releasing the DX11 sender
-and the shared texture), but a grep over native/ finds it referenced
+and the shared texture), but a grep over nvidia_mode/native/ finds it referenced
 only in its own file/header - neither RunVideo's exit clusters nor main()
 call it. Every other subsystem is torn down explicitly on exit
 (CleanupVideoNgx, CloseDda, CloseGray, CloseOut, ClosePresent...), so
@@ -31,7 +31,7 @@ sys.path.insert(0, str(BASE))
 
 def main() -> int:
     failures = []
-    cpp = (BASE / "native" / "dlss5-feed-host64.cpp").read_text(
+    cpp = (BASE / "nvidia_mode" / "native" / "dlss5-feed-host64.cpp").read_text(
         encoding="utf-8", errors="replace")
 
     calls = [m.start() for m in re.finditer(r"\bSpoutBridgeShutdown\s*\(\)", cpp)]
@@ -44,9 +44,9 @@ def main() -> int:
             "while every other subsystem is torn down explicitly")
 
     # And: the init must not silently bind adapter 0 when NS_GPU picks another.
-    hdr = (BASE / "native" / "spout_bridge.h").read_text(
+    hdr = (BASE / "nvidia_mode" / "native" / "spout_bridge.h").read_text(
         encoding="utf-8", errors="replace")
-    br = (BASE / "native" / "spout_bridge.cpp").read_text(
+    br = (BASE / "nvidia_mode" / "native" / "spout_bridge.cpp").read_text(
         encoding="utf-8", errors="replace")
     takes_dev = "ID3D12Device" in hdr or "ID3D12Device" in br
     uses_default_adapter = "D3D11CreateDevice(nullptr" in br

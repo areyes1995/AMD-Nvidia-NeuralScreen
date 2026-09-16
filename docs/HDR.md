@@ -87,7 +87,7 @@ and evaluated directly in HDR. Strong edits can change highlights and colors.
 ## Validation
 
 ```bat
-native\build-host.bat
+nvidia_mode\native\build-host.bat
 runtime\python.exe tests\test_hdr_shaders.py
 runtime\python.exe tests\test_hdr_switch.py
 runtime\python.exe tests\test_bypass.py
@@ -96,7 +96,7 @@ runtime\python.exe tests\test_hdr_capture.py --desktop
 ```
 
 All four are in `tests\run_tests.py` as well. `test_hdr_shaders.py` is
-`native\test-hdr.bat` under a name the suite picks up; `test_hdr_capture.py`
+`nvidia_mode\native\test-hdr.bat` under a name the suite picks up; `test_hdr_capture.py`
 with no argument asks Windows whether the primary display is in HDR and runs
 the WGC variant when it is, rather than skipping in silence.
 

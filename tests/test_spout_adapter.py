@@ -39,7 +39,7 @@ LUID_LINE = re.compile(r"\[spout\] D3D11 on (.+) \(luid ([0-9A-F]{8}:[0-9A-F]{8}
 
 def main() -> int:
     failures = []
-    source = (BASE / "native" / "spout_bridge.cpp").read_text(encoding="utf-8")
+    source = (BASE / "nvidia_mode" / "native" / "spout_bridge.cpp").read_text(encoding="utf-8")
     if "GetAdapterLuid" not in source or "EnumAdapters1" not in source:
         failures.append("SpoutBridgeInit no longer looks the adapter up by "
                         "LUID - the D3D11 device is back on the default one")

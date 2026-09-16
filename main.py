@@ -1,7 +1,7 @@
 """DLSS 5 Desktop NR - the integration skeleton of the prototype.
 
 The loop: desktop capture (capture.ScreenCapture) -> motion guides
-(guides.TemporalGuideGenerator) -> the NGX worker (native/nvngx.dll in
+(guides.TemporalGuideGenerator) -> the NGX worker (nvidia_mode/native/nvngx.dll in
 --live mode) -> fullscreen output (display.Display).
 
 Controls (global hotkeys, RegisterHotKey + a polling fallback - see

@@ -28,7 +28,7 @@ def run():
     screen=pygame.display.set_mode((w,h),pygame.NOFRAME)
     screen.fill((210,40,20)); pygame.display.flip()
     hwnd=pygame.display.get_wm_info()['window']
-    p=subprocess.Popen([str(ROOT/'native/nvngx.dll'),'--live'],cwd=ROOT/'native',
+    p=subprocess.Popen([str(ROOT/'nvidia_mode/native/nvngx.dll'),'--live'],cwd=ROOT/'nvidia_mode/native',
         env=dict(os.environ,NS_HDR='0',NS_FRAMEGEN='0'),stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,stderr=subprocess.PIPE,creationflags=subprocess.CREATE_NO_WINDOW)
     logs=[]

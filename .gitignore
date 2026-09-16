@@ -5,19 +5,19 @@ _work/
 __pycache__/
 *.pyc
 
-# Build artefacts (native/build-host.bat, native/build-launcher.bat)
+# Build artefacts (nvidia_mode/native/build-host.bat, build-launcher.bat)
 *.obj
-native/nvngx.dll
-native/nvngx.dll.manifest
-native/nvngx.dll_ns-forwarder.dll
-native/nvngx.dll_ns-forwarder.exp
-native/nvngx.dll_ns-forwarder.lib
-native/launcher.res
+nvidia_mode/native/nvngx.dll
+nvidia_mode/native/nvngx.dll.manifest
+nvidia_mode/native/nvngx.dll_ns-forwarder.dll
+nvidia_mode/native/nvngx.dll_ns-forwarder.exp
+nvidia_mode/native/nvngx.dll_ns-forwarder.lib
+nvidia_mode/native/launcher.res
 NeuralScreen.exe
 
 # NVIDIA redistributable: 165 MB, over the GitHub file limit (100 MB).
 # How to get it - see README.md, the Requirements section.
-native/nvngx_dlssnr.dll
+nvidia_mode/native/nvngx_dlssnr.dll
 
 # Optional local Python runtime next to the program
 runtime/
@@ -53,10 +53,20 @@ _mockup_*.py
 test_bake_menu.py
 requirements.txt
 
-native/nvngx_dlss.dll
+nvidia_mode/native/nvngx_dlss.dll
 
-native/nvngx_dlssg.dll
+nvidia_mode/native/nvngx_dlssg.dll
 
 # BYO library folder: user-placed runtime dlls never enter git
-native/libraries/*.dll
-native/libraries/*.part
+nvidia_mode/native/libraries/*.dll
+nvidia_mode/native/libraries/*.part
+
+# AMD backend BYO weights: user-supplied runtime + converted weights cache
+amd_mode/weights/*.dll
+amd_mode/weights/*.bin
+amd_mode/weights/*.part
+# AMD HIP worker build artefacts (Phase 2)
+amd_mode/native/*.dll
+amd_mode/native/*.exp
+amd_mode/native/*.lib
+amd_mode/native/*.obj

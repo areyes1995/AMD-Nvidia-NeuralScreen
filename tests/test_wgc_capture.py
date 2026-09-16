@@ -127,7 +127,7 @@ def send_resize(worker, width: int, height: int, params: dict) -> bool:
 
 
 def check_source_contract() -> None:
-    source = (BASE / "native" / "dlss5-feed-host64.cpp").read_text(
+    source = (BASE / "nvidia_mode" / "native" / "dlss5-feed-host64.cpp").read_text(
         encoding="utf-8-sig")
     open_wgc = source.split("static bool OpenWgc(HWND hwnd)", 1)[1].split(
         "static void RecreateWgcPool", 1)[0]

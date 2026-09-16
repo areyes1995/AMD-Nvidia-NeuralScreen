@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 BASE = Path(__file__).resolve().parent.parent
-SOURCE = (BASE / "native" / "dlss5-feed-host64.cpp").read_text(encoding="utf-8")
+SOURCE = (BASE / "nvidia_mode" / "native" / "dlss5-feed-host64.cpp").read_text(encoding="utf-8")
 
 
 def main() -> int:

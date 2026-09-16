@@ -116,7 +116,7 @@ def run(shared: bool):
 
 def main() -> int:
     failures = []
-    source = (BASE / "native" / "dlss5-feed-host64.cpp").read_text(encoding="utf-8")
+    source = (BASE / "nvidia_mode" / "native" / "dlss5-feed-host64.cpp").read_text(encoding="utf-8")
     if "OwnTheProtocolPipe" not in source:
         failures.append("the protocol no longer takes a private handle - a "
                         "stray printf can corrupt it again (issue #61)")

@@ -6,7 +6,7 @@ replies into a queue. It needs nothing from main.py, which is why it could
 leave: the commands are self-contained by design.
 
 The sizes here are not free-form. Every struct format has a static_assert
-behind it in native/dlss5-feed-host64.cpp, and tests/test_protocol_sizes.py
+behind it in nvidia_mode/native/dlss5-feed-host64.cpp, and tests/test_protocol_sizes.py
 checks the two sides against each other - a field added on one side and not
 the other is a build error now, not a runtime desync.
 """

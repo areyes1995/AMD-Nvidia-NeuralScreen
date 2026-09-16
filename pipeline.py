@@ -136,7 +136,7 @@ def start_worker(params: dict, width: int, height: int, warmup: int,
     if not WORKER_EXE.is_file():
         raise FileNotFoundError(
             f"worker not found: {WORKER_EXE}\n"
-            "Copy nvngx.dll (the built worker) and nvngx_dlssnr.dll into native/."
+            "Copy nvngx.dll (the built worker) and nvngx_dlssnr.dll into nvidia_mode/native/."
         )
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     worker = subprocess.Popen(

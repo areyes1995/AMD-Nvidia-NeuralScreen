@@ -13,7 +13,7 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-NATIVE = ROOT / "native"
+NATIVE = ROOT / "nvidia_mode" / "native"
 SOURCE = NATIVE / "dlss5-feed-host64.cpp"
 
 

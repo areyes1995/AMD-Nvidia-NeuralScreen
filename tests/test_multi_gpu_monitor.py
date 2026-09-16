@@ -83,7 +83,7 @@ def main() -> int:
         else:
             sys.modules["dxcam"] = original_dxcam
 
-    worker = (BASE / "native" / "dlss5-feed-host64.cpp").read_text(
+    worker = (BASE / "nvidia_mode" / "native" / "dlss5-feed-host64.cpp").read_text(
         encoding="utf-8", errors="replace")
     start = worker.find("static IDXGIOutput *EnumCaptureOutput")
     end = worker.find("static bool OpenDda", start)

@@ -43,8 +43,8 @@ def run(desktop=False):
         hwnd = pygame.display.get_wm_info()["window"]
     work_w, work_h = (1280, 720) if desktop else (width, height)
     env = dict(os.environ, NS_HDR="1", NS_NR_SMALL="1", NS_PW_ADAPTIVE="0")
-    worker = subprocess.Popen([str(ROOT / "native/nvngx.dll"), "--live"],
-                              cwd=ROOT / "native", env=env, stdin=subprocess.PIPE,
+    worker = subprocess.Popen([str(ROOT / "nvidia_mode/native/nvngx.dll"), "--live"],
+                              cwd=ROOT / "nvidia_mode/native", env=env, stdin=subprocess.PIPE,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               creationflags=subprocess.CREATE_NO_WINDOW)
     logs = []

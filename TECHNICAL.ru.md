@@ -398,16 +398,16 @@ feature создаваться на не-Blackwell картах; отказ на
 ## Сборка воркера
 
 ```
-native\build-host.bat
+nvidia_mode\native\build-host.bat
 ```
 
 Нужны MSVC 2022 Build Tools по пути
 `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools`. Скрипт
-собирает `dlss5-feed-host64.cpp` в `native/nvngx.dll`, линкуясь с
-`native/lib/Windows_x86_64/x64/nvsdk_ngx_d.lib`. Заголовки NGX — в
-`native/include/`.
+собирает `dlss5-feed-host64.cpp` в `nvidia_mode/native/nvngx.dll`, линкуясь с
+`nvidia_mode/native/lib/Windows_x86_64/x64/nvsdk_ngx_d.lib`. Заголовки NGX — в
+`nvidia_mode/native/include/`.
 
-Артефакт `native/nvngx.dll` в репозиторий не кладётся.
+Артефакт `nvidia_mode/native/nvngx.dll` в репозиторий не кладётся.
 
 ## Деградированный режим (без NVIDIA)
 
@@ -421,7 +421,7 @@ native\build-host.bat
 потому, что она первая в порядке DXGI, — иначе первую дискретную.
 `startup.bring_up` пишет вердикт в лог (`System using: AMD RX 9070 XT
 (neural pass: unavailable)`) и ставит gate: нет NVIDIA или нет
-`native/nvngx.dll` — деградированный режим (причины `no_nvidia` /
+`nvidia_mode/native/nvngx.dll` — деградированный режим (причины `no_nvidia` /
 `no_worker`). С NVIDIA и файлами на месте конвейер ниже работает ровно
 как раньше — обычный путь не тронут.
 
@@ -457,12 +457,12 @@ FG-рантайм (`nvngx_dlssg.dll`) идёт в архиве - публичн�
 310.9.1.0, подписан NVIDIA, включён без изменений. Лицензионная позиция
 заявлена в замечании README: по требованию правообладателя уберём. Без DLL
 переключатель вежливо откажет, ничего не ломается; своя сборка кладётся в
-`native/libraries/`.
+`nvidia_mode/native/libraries/`.
 
 ## Рантаймы и папка libraries
 
 NR-рантайм лежит в архиве; опциональный FG-рантайм пользователь ставит сам в
-`native/libraries/` - эта папка приоритетнее `native/` для всех рантаймов,
+`nvidia_mode/native/libraries/` - эта папка приоритетнее `nvidia_mode/native/` для всех рантаймов,
 которые ищет загрузчик. Сетевого доступа нет: прежний автоапдейтер удалён, а
 вместе с ним дефект, при котором тогглер `library_updates_enabled` никогда
 не сохранялся.

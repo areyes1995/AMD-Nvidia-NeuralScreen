@@ -1,7 +1,7 @@
 # Libraries (BYO - bring your own)
 
 Place your own NVIDIA runtime DLLs here; they win over the bundled copies
-in the parent (`native/`) directory. Files are loaded by exact name:
+in the parent (`nvidia_mode/native/`) directory. Files are loaded by exact name:
 
 - `nvngx_dlssg.dll` - DLSS Frame Generation (Settings -> Processing ->
   DLSS Frame Generation). Without it the FG switch reports
@@ -22,7 +22,7 @@ downloads anything on its own; it stays fully offline.
 # Библиотеки (устанавливаются вручную)
 
 Положите свои DLL рантаймы NVIDIA сюда; файлы из этой папки имеют
-приоритет над копиями в родительской (`native/`). Загрузка идёт по
+приоритет над копиями в родительской (`nvidia_mode/native/`). Загрузка идёт по
 точному имени файла:
 
 - `nvngx_dlssg.dll` - DLSS Frame Generation (Настройки -> Обработка ->

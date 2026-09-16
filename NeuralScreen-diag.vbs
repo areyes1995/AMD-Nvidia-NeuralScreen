@@ -46,19 +46,21 @@ If py = "pythonw" Then
 End If
 
 ' --- NGX runtime check (165 MB, not kept in git) ---
-If Not fso.FileExists(dir & "\native\nvngx_dlssnr.dll") Then
-    MsgBox "NeuralScreen: native\nvngx_dlssnr.dll not found." & vbCrLf & _
+' Degraded mode: without it the program still opens (control window,
+' neural functions off) instead of refusing to start.
+If Not fso.FileExists(dir & "\nvidia_mode\native\nvngx_dlssnr.dll") Then
+    MsgBox "NeuralScreen: nvidia_mode\native\nvngx_dlssnr.dll not found." & vbCrLf & _
+           "Running degraded (neural pass disabled)." & vbCrLf & _
            "Re-download the release archive, or see README.md, section " & _
-           "What you need.", 16, "NeuralScreen"
-    WScript.Quit 1
+           "What you need.", 64, "NeuralScreen"
 End If
 
 ' --- Worker check (a build artefact) ---
-If Not fso.FileExists(dir & "\native\nvngx.dll") Then
-    MsgBox "NeuralScreen: native\nvngx.dll not found." & vbCrLf & _
-           "Build it with native\build-host.bat or re-download the release archive.", _
-           16, "NeuralScreen"
-    WScript.Quit 1
+If Not fso.FileExists(dir & "\nvidia_mode\native\nvngx.dll") Then
+    MsgBox "NeuralScreen: nvidia_mode\native\nvngx.dll not found." & vbCrLf & _
+           "Running degraded (neural pass disabled)." & vbCrLf & _
+           "Build it with nvidia_mode\native\build-host.bat or re-download the release archive.", _
+           64, "NeuralScreen"
 End If
 
 ' --- Diagnostic mode: NS_PHASE=1 turns on the worker phase profiler ---

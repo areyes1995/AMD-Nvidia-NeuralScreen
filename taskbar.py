@@ -13,7 +13,7 @@ command. The tray/hotkey retain their useful toggle semantics, but duplicate
 taskbar activation must never close a visible menu. The window itself never
 shows anything.
 
-The icon comes from native/neuralscreen.ico (the same one the launcher
+The icon comes from nvidia_mode/native/neuralscreen.ico (the same one the launcher
 uses), so the taskbar button looks like the program.
 """
 
@@ -220,7 +220,8 @@ class TaskbarWindow:
 
     def _set_icon(self, hinst) -> None:
         """The launcher's icon, so the taskbar button looks like the app."""
-        ico = Path(__file__).resolve().parent / "native" / "neuralscreen.ico"
+        from paths import NATIVE_DIR
+        ico = NATIVE_DIR / "neuralscreen.ico"
         if not ico.is_file():
             return
         hicon = user32.LoadImageW(hinst, str(ico), IMAGE_ICON, 32, 32,
