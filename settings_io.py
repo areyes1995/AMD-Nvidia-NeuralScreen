@@ -845,6 +845,13 @@ def menu_payload(st) -> dict:
         "autostart": _autostart_enabled(),
         "split": st.split_pos,
         "gpu_text": st.gpu_text,
+        # Which vendor drives the machine ("System using: NVIDIA ...").
+        # It is what gates the neural features: AMD/Intel stays degraded.
+        "system_using": getattr(st, "system_using", ""),
+        "system_vendor": (getattr(st, "system_gpu", {}).get("vendor", "Unknown")
+                          if isinstance(getattr(st, "system_gpu", None), dict)
+                          else "Unknown"),
+        "has_nvidia": bool(getattr(st, "has_nvidia", False)),
         # The four facts the log header carries, for the About block. A
         # reporter can read them off the menu instead of being asked which
         # version and which driver - which is the first exchange on almost

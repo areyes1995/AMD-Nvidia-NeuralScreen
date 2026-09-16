@@ -32,7 +32,9 @@ import numpy as np
 
 from capture import ScreenCapture, list_adapters, resolve_output_idx
 from display import Display
-from gpuinfo import describe as gpu_describe, probe as gpu_probe
+from gpuinfo import (describe as gpu_describe, has_nvidia, primary_gpu,
+                      probe as gpu_probe, system_adapters,
+                      system_using_label)
 from guides import TemporalGuideGenerator
 from hotkeys import (HotkeyController, build_bindings,
                      describe as describe_hotkeys, numlock_needed,
@@ -464,24 +466,45 @@ def bring_up(st) -> None:
     # restarts climbed to NR OFF - the exact storm the shortening exists to
     # prevent (audit F3).
     st.effective_warmup = effective_warmup
-    st.degraded = False
-    try:
-        st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(
-            st.params, st.work_w, st.work_h, effective_warmup, full_w, full_h, st.shm)
-    except (FileNotFoundError, OSError) as exc:
-        # Degraded mode: the native worker (nvngx.dll) or the NR runtime
-        # is missing. The program still opens - overlay menu, tray,
-        # hotkeys, raw capture - with the neural functions disabled.
+    # System spec check: which vendor drives this machine, and whether
+    # the neural pass can run here at all. No NVIDIA GPU (AMD/Intel) ->
+    # degraded mode with the neural functions deactivated; NVIDIA ->
+    # the normal pipeline, exactly as before.
+    _adapters = system_adapters()
+    st.system_gpu = primary_gpu(_adapters)
+    st.has_nvidia = has_nvidia(_adapters)
+    st.system_using = system_using_label(st.system_gpu)
+    st.degraded_reason = ""
+    print(f"[main] {st.system_using} "
+          f"(neural pass: {'available' if st.has_nvidia else 'unavailable'})")
+    st.degraded = not st.has_nvidia
+    if st.degraded:
+        st.degraded_reason = "no_nvidia"
         st.worker = None
         st.worker_logs = []
         st.reader = None
         st.worker_stop = None
-        st.degraded = True
-        print(f"[main] worker unavailable ({exc}) - running degraded "
-              f"(no neural pass, raw capture only)", file=sys.stderr)
+        print(f"[main] no NVIDIA GPU - running degraded "
+              f"(control window, neural functions off)", file=sys.stderr)
     else:
-        print(f"[main] worker started (pid {st.worker.pid}), header sent "
-              f"({st.work_w}x{st.work_h})")
+        try:
+            st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(
+                st.params, st.work_w, st.work_h, effective_warmup, full_w, full_h, st.shm)
+        except (FileNotFoundError, OSError) as exc:
+            # Degraded mode: the native worker (nvngx.dll) or the NR
+            # runtime is missing. The program still opens - control
+            # window, tray, hotkeys - with the neural functions disabled.
+            st.worker = None
+            st.worker_logs = []
+            st.reader = None
+            st.worker_stop = None
+            st.degraded = True
+            st.degraded_reason = "no_worker"
+            print(f"[main] worker unavailable ({exc}) - running degraded "
+                  f"(no neural pass)", file=sys.stderr)
+        else:
+            print(f"[main] worker started (pid {st.worker.pid}), header sent "
+                  f"({st.work_w}x{st.work_h})")
 
     print(f"[main] capturing monitor {st.monitor}: {st.capture.resolution}")
 

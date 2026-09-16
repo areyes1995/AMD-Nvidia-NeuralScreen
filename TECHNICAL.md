@@ -460,6 +460,42 @@ This likely conflicts with the license terms of NVIDIA's redistributable. It
 defeats no copy protection and modifies no files, but enabling it is your
 call.
 
+## Degraded mode (no NVIDIA)
+
+On a machine that cannot run the neural pass the program opens anyway,
+as a plain control window, instead of refusing to start.
+
+**Detection** (`gpuinfo.system_adapters`): every physical GPU is
+enumerated through DXGI with its PCI vendor id (0x10DE NVIDIA, 0x1002
+AMD, 0x8086 Intel; software adapters skipped). `primary_gpu` picks
+NVIDIA first — on a hybrid laptop the integrated GPU must not win just
+by being first in DXGI order — otherwise the first discrete card.
+`startup.bring_up` logs the verdict (`System using: AMD RX 9070 XT
+(neural pass: unavailable)`) and sets the gate: no NVIDIA, or a missing
+`native/nvngx.dll`, means degraded (reasons `no_nvidia` / `no_worker`).
+With NVIDIA present and the files in place the pipeline below runs
+exactly as before — nothing on the normal path changed.
+
+**The label**: `menu_payload` carries `system_using`
+(`System using: NVIDIA RTX 4070`), `system_vendor` and `has_nvidia`;
+the menu draws it as its own muted row under the status line
+(`OverlayMenu._draw_system`). The vendor word is what gates the
+features; the card name says which adapter was picked on multi-GPU
+machines.
+
+**The degraded loop** (main.py): no capture blitting, no send/recv —
+a transparent fullscreen layer would freeze the desktop look and eat
+the mouse, so degraded uses a plain framed `Display` (`plain=True`:
+centred, taskbar button, no topmost/transparency/click-through/capture
+affinity) with the menu fitted to its width (`fit_window`). The loop is
+paced at the monitor's own refresh rate (`EnumDisplaySettings`,
+`degraded_interval`) and only redraws the menu/HUD/alerts. Tray,
+taskbar, hotkeys and screenshots (one direct grab) keep working.
+Everything that needs the worker (`pipeline.do_restart`,
+`switch_monitor/window`, `apply_spout/hdr/gpu/motion_backend`,
+NR toggle, recording) is a no-op with a `Not available: worker
+missing` notice instead of a crash.
+
 ## Building the worker
 
 ```

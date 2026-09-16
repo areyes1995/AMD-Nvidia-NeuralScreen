@@ -233,6 +233,10 @@ class OverlayMenu:
             # True/False/None (None - the worker has not answered yet).
             "gpu_text": "",
             "gpu_ok": None,
+            # Which vendor drives the machine ("System using: NVIDIA").
+            "system_using": "",
+            "system_vendor": "Unknown",
+            "has_nvidia": False,
             "window_mode": False,
             "monitor": "0",
             "monitors": [],
@@ -286,6 +290,8 @@ class OverlayMenu:
         # skipped there anyway).
         self._stats_rel = pygame.Rect(0, 0, 0, 0)
         self._gpu_rel = pygame.Rect(0, 0, 0, 0)
+        self._system_rel = pygame.Rect(0, 0, 0, 0)
+        self._system_rect = pygame.Rect(0, 0, 0, 0)
         # The panel can be dragged by its title bar and stretched by its
         # corner. The offset is stored relative to the screen centre, so it
         # survives a resolution change without the window ending up off-screen.
@@ -546,6 +552,12 @@ class OverlayMenu:
             self._stats_rel = pygame.Rect(pad, cy, inner_w, status_h)
             self._gpu_rel = pygame.Rect(0, 0, 0, 0)   # folded into the line
             cy += status_h + gap
+            # The vendor line ("System using: NVIDIA / AMD"): one muted
+            # row under the status, main page only. It names the card
+            # that gates the neural features.
+            sys_h = self._u(SMALL_SIZE) + self._u(10)
+            self._system_rel = pygame.Rect(pad, cy, inner_w, sys_h)
+            cy += sys_h + gap
 
         # The content is split into titled blocks: eight identical rows in a
         # row gave the eye nothing to hold on to. The titles are not
@@ -1140,6 +1152,8 @@ class OverlayMenu:
         # any hit-testing never see a stale rect from a previous page.
         self._stats_rect = (self._stats_rel.move(x, sy)
                             if self.page == "main" else pygame.Rect(0, 0, 0, 0))
+        self._system_rect = (self._system_rel.move(x, sy)
+                             if self.page == "main" else pygame.Rect(0, 0, 0, 0))
         self._gpu_rect = (self._gpu_rel.move(x, sy)
                           if self.page == "main" else pygame.Rect(0, 0, 0, 0))
         self._hint_rect = self._hint_rel.move(x, sy)
@@ -1746,6 +1760,7 @@ class OverlayMenu:
         # computed there, so the drawers must not run.
         if self.page == "main":
             self._draw_stats(surface, s)
+            self._draw_system(surface)
         self._draw_sections(surface)
         self._draw_rules(surface, s)
         # The resize corner: three short strokes, as resize handles usually go
@@ -1860,6 +1875,25 @@ class OverlayMenu:
         if bool(self.state.get("idle")):
             return str(s.get("idle_short", "idle")), False
         return str(s.get("status_on", "processing")), False
+
+    def _draw_system(self, surface) -> None:
+        """The vendor line: which card drives the machine.
+
+        "System using: NVIDIA RTX 4070" / "System using: AMD ...".
+        The vendor is what gates the neural features (AMD/Intel stays
+        degraded), so it gets its own row under the status line rather
+        than living only in the log header.
+        """
+        rect = self._system_rect
+        if rect.w <= 0:
+            return
+        text = str(self.state.get("system_using") or "").strip()
+        if not text:
+            return
+        pad = self._u(STAT_PAD)
+        img = self._clip(self._small_font, text, _rgb(self.c["muted"]),
+                         max(0, rect.w - pad * 2))
+        surface.blit(img, (rect.x + pad, rect.centery - img.get_height() // 2))
 
     def _draw_stats(self, surface, s: dict) -> None:
         """The status line: is it working, how fast, how big, on what.

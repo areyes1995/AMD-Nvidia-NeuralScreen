@@ -151,6 +151,99 @@ def describe(info: dict) -> str:
     return f"{name} · {arch}" if arch else name
 
 
+#: PCI vendor IDs, as DXGI reports them in AdapterDesc.VendorId.
+VENDOR_IDS = {
+    0x10DE: "NVIDIA",
+    0x1002: "AMD",
+    0x8086: "Intel",
+    0x1414: "Microsoft",
+}
+
+#: Prefixes that add nothing to a menu line.
+_VENDOR_PREFIXES = ("NVIDIA GeForce ", "NVIDIA ", "AMD Radeon ",
+                    "Intel(R) Arc(TM) ", "Intel(R) ")
+
+
+def system_adapters() -> list:
+    """Every physical GPU as [(dxgi_index, vendor, name), ...].
+
+    Unlike capture.list_adapters (NVIDIA only, for the worker picker),
+    this lists all vendors: the program needs to know whether the
+    machine can run the neural pass at all (NVIDIA) or stays degraded
+    (AMD/Intel). Empty on failure - never raises.
+    """
+    try:
+        from dxcam.core.device import Device
+        from dxcam.util.io import enum_dxgi_adapters
+    except Exception:
+        return []
+    out = []
+    try:
+        for idx, adapter in enumerate(enum_dxgi_adapters()):
+            try:
+                desc = Device(adapter).desc
+            except Exception:
+                continue
+            if getattr(desc, "Flags", 0) & 2:  # DXGI_ADAPTER_FLAG_SOFTWARE
+                continue
+            try:
+                vendor = VENDOR_IDS.get(int(getattr(desc, "VendorId", 0)),
+                                        "Unknown")
+            except (TypeError, ValueError):
+                vendor = "Unknown"
+            out.append((idx, vendor, str(desc.Description).strip()))
+    except Exception:
+        return []
+    return out
+
+
+def short_name(vendor: str, name: str) -> str:
+    """Card name without the vendor boilerplate ("RTX 4070")."""
+    for prefix in _VENDOR_PREFIXES:
+        if name.startswith(prefix):
+            return name[len(prefix):].strip()
+    return name.strip()
+
+
+def primary_gpu(adapters=None) -> dict:
+    """{"vendor", "name"} of the card that matters: NVIDIA first.
+
+    A hybrid laptop lists the integrated GPU next to the discrete one -
+    the neural pass can only ever run on NVIDIA, so that one wins even
+    when it is not first in DXGI order. {"vendor": "Unknown", "name": ""}
+    when nothing is found.
+    """
+    if adapters is None:
+        adapters = system_adapters()
+    if not adapters:
+        return {"vendor": "Unknown", "name": ""}
+    for _idx, vendor, name in adapters:
+        if vendor == "NVIDIA":
+            return {"vendor": vendor, "name": short_name(vendor, name)}
+    _idx, vendor, name = adapters[0]
+    return {"vendor": vendor, "name": short_name(vendor, name)}
+
+
+def has_nvidia(adapters=None) -> bool:
+    """Whether any physical GPU can run the neural pass (NVIDIA)."""
+    if adapters is None:
+        adapters = system_adapters()
+    return any(vendor == "NVIDIA" for _idx, vendor, _name in adapters)
+
+
+def system_using_label(info=None) -> str:
+    """Menu label: "System using: NVIDIA RTX 4070" / "...: AMD ...".
+
+    The vendor word is what gates the features; the card name is what
+    tells the user which one was picked on multi-GPU machines.
+    """
+    if info is None:
+        info = primary_gpu()
+    vendor = str(info.get("vendor") or "Unknown")
+    name = str(info.get("name") or "").strip()
+    return f"System using: {vendor} {name}".strip()
+
+
 if __name__ == "__main__":
     got = probe()
     print(describe(got) or "unknown GPU")

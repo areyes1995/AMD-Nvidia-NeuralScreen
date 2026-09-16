@@ -356,6 +356,10 @@ class _Pipeline:
         "hdr_alerted",
         "degraded",
         "degraded_interval",
+        "degraded_reason",
+        "system_gpu",
+        "has_nvidia",
+        "system_using",
     )
 
 
@@ -498,8 +502,14 @@ def main() -> int:
             if getattr(st, "degraded", False):
                 commands.drain_save_dialog(st)
                 if st.frame_index == 0:
-                    st.display.alert("Degraded: worker missing - neural pass disabled",
-                                     duration=6.0)
+                    if getattr(st, "degraded_reason", "") == "no_nvidia":
+                        st.display.alert(
+                            "Degraded: no NVIDIA GPU - neural pass disabled",
+                            duration=6.0)
+                    else:
+                        st.display.alert(
+                            "Degraded: worker missing - neural pass disabled",
+                            duration=6.0)
                     print("[main] degraded mode: control window, "
                           "neural pass disabled")
                 if st.display.menu.visible:

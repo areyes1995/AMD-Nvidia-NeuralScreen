@@ -47,6 +47,26 @@ screen down the middle.*
   commonest reason it refuses to start or the picture never appears.
 - **Nothing installed.** The release archive brings its own Python.
 
+### Without an NVIDIA card (degraded mode)
+
+The program detects your graphics hardware at startup — see the
+`System using: ...` line under the status row in the menu, and in
+`NeuralScreen.log` — and only enables the neural pipeline on NVIDIA:
+
+- **NVIDIA present** — everything works as described here (30/40-series
+  included, via the architecture hook documented in
+  [TECHNICAL.md](TECHNICAL.md)).
+- **AMD / Intel / no NVIDIA card** — the program still opens, as a plain
+  `NeuralScreen (degraded)` control window with the menu, tray icon,
+  taskbar button and hotkeys, paced at your monitor's own refresh rate.
+  The neural functions (NR, Boost, Frame Generation, recording,
+  window/monitor/GPU switching) stay off and say so instead of failing:
+  `Not available: worker missing`.
+
+Degraded mode also covers a machine where the native files are missing
+(`native/nvngx.dll`, `nvngx_dlssnr.dll`): same window, same disabled
+functions, and `System using:` still names your card.
+
 ## Install
 
 1. Download the archive from [Releases](https://github.com/perseval-BLR/DLSS5-NeuralScreen/releases)
