@@ -23,6 +23,12 @@ AMD_NATIVE_DIR = AMD_MODE_DIR / "native"
 AMD_WEIGHTS_DIR = AMD_MODE_DIR / "weights"
 
 
+#: The AMD worker. Deliberately NOT nvngx.dll: the NGX name rule belongs
+#: to NVIDIA's runtime, and sharing the name would only confuse the two
+#: pipelines (and the tests that assert on it).
+AMD_WORKER_EXE = AMD_NATIVE_DIR / "amd_nr_host.exe"
+
+
 # IMPORTANT: NGX Core returns FAIL_PlatformError from Init_Ext for ANY process
 # name other than nvngx.dll (verified experimentally). The file name is part of
 # the NGX contract.

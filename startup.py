@@ -40,7 +40,7 @@ from hotkeys import (HotkeyController, build_bindings,
                      describe as describe_hotkeys, numlock_needed,
                      numlock_on)
 from i18n import STRINGS as UI_STRINGS
-from paths import BASE_DIR
+from paths import AMD_NATIVE_DIR, AMD_WORKER_EXE, BASE_DIR, NATIVE_DIR, WORKER_EXE
 from pipeline import start_worker
 from protocol import SharedFrameBuffer, WorkerReader
 from recorder import VideoRecorder
@@ -467,44 +467,55 @@ def bring_up(st) -> None:
     # prevent (audit F3).
     st.effective_warmup = effective_warmup
     # System spec check: which vendor drives this machine, and whether
-    # the neural pass can run here at all. No NVIDIA GPU (AMD/Intel) ->
-    # degraded mode with the neural functions deactivated; NVIDIA ->
-    # the normal pipeline, exactly as before.
+    # the neural pass can run here at all. The backend selector owns the
+    # decision (amd_mode/python/backend.py): NVIDIA -> the normal
+    # pipeline, exactly as before; AMD with its worker built -> the AMD
+    # worker; otherwise degraded with the neural functions deactivated.
+    # NS_NR_BACKEND (or config.json nr_backend) forces auto/nvidia/amd.
+    from amd_mode.python.backend import normalize_backend, select_backend
     _adapters = system_adapters()
     st.system_gpu = primary_gpu(_adapters)
     st.has_nvidia = has_nvidia(_adapters)
     st.system_using = system_using_label(st.system_gpu)
-    st.degraded_reason = ""
+    _override = normalize_backend(os.environ.get("NS_NR_BACKEND"),
+                                  st.cfg.get("nr_backend", "auto"))
+    st.backend, st.degraded_reason = select_backend(
+        _override, st.has_nvidia, WORKER_EXE.is_file(),
+        AMD_WORKER_EXE.is_file())
     print(f"[main] {st.system_using} "
-          f"(neural pass: {'available' if st.has_nvidia else 'unavailable'})")
-    st.degraded = not st.has_nvidia
+          f"(backend: {st.backend}, override: {_override})")
+    st.degraded = (st.backend == "degraded")
     if st.degraded:
-        st.degraded_reason = "no_nvidia"
         st.worker = None
         st.worker_logs = []
         st.reader = None
         st.worker_stop = None
-        print(f"[main] no NVIDIA GPU - running degraded "
-              f"(control window, neural functions off)", file=sys.stderr)
+        print(f"[main] running degraded ({st.degraded_reason}) - "
+              f"control window, neural functions off", file=sys.stderr)
     else:
+        _exe, _cwd = ((WORKER_EXE, NATIVE_DIR)
+                       if st.backend == "nvidia"
+                       else (AMD_WORKER_EXE, AMD_NATIVE_DIR))
         try:
             st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(
-                st.params, st.work_w, st.work_h, effective_warmup, full_w, full_h, st.shm)
+                st.params, st.work_w, st.work_h, effective_warmup, full_w, full_h, st.shm,
+                exe=_exe, cwd=_cwd)
         except (FileNotFoundError, OSError) as exc:
-            # Degraded mode: the native worker (nvngx.dll) or the NR
-            # runtime is missing. The program still opens - control
-            # window, tray, hotkeys - with the neural functions disabled.
+            # The files vanished between the check and the spawn (or the
+            # spawn itself failed): degraded, with the honest reason.
             st.worker = None
             st.worker_logs = []
             st.reader = None
             st.worker_stop = None
             st.degraded = True
-            st.degraded_reason = "no_worker"
+            st.backend = "degraded"
+            st.degraded_reason = ("no_worker" if _exe == WORKER_EXE
+                                  else "no_amd_worker")
             print(f"[main] worker unavailable ({exc}) - running degraded "
                   f"(no neural pass)", file=sys.stderr)
         else:
-            print(f"[main] worker started (pid {st.worker.pid}), header sent "
-                  f"({st.work_w}x{st.work_h})")
+            print(f"[main] {st.backend} worker started (pid {st.worker.pid}), "
+                  f"header sent ({st.work_w}x{st.work_h})")
 
     print(f"[main] capturing monitor {st.monitor}: {st.capture.resolution}")
 

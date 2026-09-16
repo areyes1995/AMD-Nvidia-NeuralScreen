@@ -20,7 +20,7 @@ RUNTIME_SHA256 = {
     # Original NVIDIA-signed 310.8 (RTX 50).
     "e16bcf15e16e13f527491cdf7845b2fe6521a738d8f7c9c721866a8496e1fc8e": "nvidia-310.8",
     # ShortFuse cross-generation 310.8 (RTX 20/30/40).
-    "e67dee209320cdaffE0e93e45675d7aa34323a53acc57a72b2e40a181581c989a".lower(): "shortfuse-310.8",
+    "e67dee209320cdafe0e93e45675d7aa34323a53acc57a72b2e40a181581c989a": "shortfuse-310.8",
 }
 
 RUNTIME_NAME = "nvngx_dlssnr.dll"
@@ -45,8 +45,10 @@ def sha256_of(path: Path) -> str:
     return h.hexdigest()
 
 
-def verify_runtime(path: Path) -> tuple:
+def verify_runtime(path) -> tuple:
     """(ok, label|reason) for a user-supplied runtime DLL."""
+    if path is None:
+        return False, "no runtime supplied"
     path = Path(path)
     if not path.is_file():
         return False, f"not found: {path}"

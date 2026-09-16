@@ -1,8 +1,13 @@
-# AMD backend (Phase 1: skeleton)
+# AMD backend (Phase 2a: echo worker live)
 
-HIP neural pipeline for AMD cards. Today this folder is the contract
-Phase 2 will implement; the program runs degraded on AMD until the HIP
-worker lands.
+HIP neural pipeline for AMD cards. `native/amd_nr_host.exe` (built by
+`build-amd.bat`, MSVC 2022) already speaks the full worker protocol
+with a passthrough neural pass — `NS_NR_BACKEND=amd` (or auto, when it
+is the only worker that can run) drives the complete pipeline on AMD:
+capture → guides → worker → fullscreen overlay, screenshots, recording,
+RNSZ. Every channel refusal is honest (pipe/dxcam/pygame fallbacks).
+Phase 2b swaps the passthrough for the HIP DlssNr engine; Python does
+not change.
 
 ```
 amd_mode/
@@ -37,6 +42,41 @@ the menu keeps speaking sliders+style, and `nvidia_to_dlssnr()` emits
 the `[DlssNr]` multipass description (Passes 1–3, WorkingScale,
 RunBeforeSR, per-pass Style/Intensity/LocalStructure/LocalTone/
 SkinStructure/AutoMask, AmdModelScale, AmdNeuralLighting).
+
+## Phase 1 findings (2026-09-16, RX 9070 XT)
+
+- **No public HIP source**: all upstream branches are NVIDIA-side; the
+  AMD adaptation exists only as local binaries. Engine source must come
+  from the pack author.
+- **`.bin` decoded**: `DLSSNRW1` + count + `{u8 len, name, u64 offset,
+  u64 size}` × ~153 named tensors (`blockN.layerM.layer`), dense float
+  blobs. Our loader can parse it; dtype/layout per tensor is Phase 2.
+- **HIP runtime works**: `amdhip64_7.dll` ships with the AMD driver —
+  1 device, malloc/memcpy roundtrip OK via ctypes.
+- **Zero-copy path viable**: `hipImportExternalMemory`,
+  `hipExternalMemoryGetMappedBuffer` + external semaphores all
+  exported (12/12 core APIs too). DDA texture → HIP without CPU copy.
+- **Blocked**: no MSVC Build Tools on this machine — required before
+  any Phase 2 native compile.
+
+## Runtime independence (verified, RE Requiem install)
+
+- Game folder has **no `nvngx_dlssnr.dll`** — the AMD path runs without
+  the original driver. It was a one-time donor only: `_storage_` keeps
+  a ShortFuse cross-gen 310.8 copy (hash `E67DEE20…`) that the v0.2.14
+  standalone proxy used to build the `.bin`.
+- Runtime file set for NR: `dxgi.dll` (OptiScaler host, self-contained
+  `DlssNr_Dx12` engine) + `dlssnr_on_amd_weights.bin` +
+  `experimental_lighting/*.cso` + `OptiScaler.ini`. The pass DLLs are
+  dev harnesses; `dlss-enabler-headless.dll` is DLSS-G only (688
+  `DLSSG_*` exports, zero NR) and ships `.DISABLED` — irrelevant to NR.
+- Perf targets (RX 9070 XT, 1280x720, history on, zero-copy):
+  ~15–16 ms/job steady, ~31 ms first jobs; self-check "pre-block zero
+  ~0.05% (healthy)".
+- Staging contract (harness log): colour/motion/depth + exposure,
+  `residual on`, inline same-frame zero-copy interop.
+- Extra sections in the local ini (`[AmdLook]`, `[AmdRtgi]`) are
+  bundled extras, out of NR scope.
 
 ## Attribution
 

@@ -360,6 +360,7 @@ class _Pipeline:
         "system_gpu",
         "has_nvidia",
         "system_using",
+        "backend",
     )
 
 
@@ -502,9 +503,14 @@ def main() -> int:
             if getattr(st, "degraded", False):
                 commands.drain_save_dialog(st)
                 if st.frame_index == 0:
-                    if getattr(st, "degraded_reason", "") == "no_nvidia":
+                    _reason = getattr(st, "degraded_reason", "")
+                    if _reason == "no_nvidia":
                         st.display.alert(
                             "Degraded: no NVIDIA GPU - neural pass disabled",
+                            duration=6.0)
+                    elif _reason == "no_amd_worker":
+                        st.display.alert(
+                            "Degraded: AMD worker not built - neural pass disabled",
                             duration=6.0)
                     else:
                         st.display.alert(
@@ -611,12 +617,13 @@ def main() -> int:
                     st.worker_failed = False
                     print("[main] auto-reviving the worker after the transient failure")
                     try:
+                        _exe, _cwd = pipeline.worker_target(st)
                         st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
                             st.worker, st.params, st.work_w, st.work_h,
                             st.effective_warmup,
                             st.width if (st.work_w != st.width or st.work_h != st.height) else 0,
                             st.height if (st.work_w != st.width or st.work_h != st.height) else 0,
-                            st.worker_stop, st.shm)
+                            st.worker_stop, st.shm, exe=_exe, cwd=_cwd)
                         channels.forget_present(st)
                         channels.forget_dda(st)
                         channels.forget_out(st)
@@ -889,11 +896,12 @@ def main() -> int:
                     print("[main] worker stderr (tail):")
                     for line in st.worker_logs[-15:]:
                         print(f"  {line}")
+                _exe, _cwd = pipeline.worker_target(st)
                 st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
                     st.worker, st.params, st.work_w, st.work_h, st.effective_warmup,
                     st.width if (st.work_w != st.width or st.work_h != st.height) else 0,
                     st.height if (st.work_w != st.width or st.work_h != st.height) else 0,
-                    st.worker_stop, st.shm)
+                    st.worker_stop, st.shm, exe=_exe, cwd=_cwd)
                 channels.forget_present(st)
                 channels.forget_dda(st)
                 channels.forget_out(st)
@@ -993,11 +1001,12 @@ def main() -> int:
                     continue
                 print(f"[main] worker silent/dead on frame {st.frame_index} ({exc}) - restarting "
                       f"({st.consecutive_restarts}/{MAX_CONSECUTIVE_RESTARTS})")
+                _exe, _cwd = pipeline.worker_target(st)
                 st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
                     st.worker, st.params, st.work_w, st.work_h, st.effective_warmup,
                     st.width if (st.work_w != st.width or st.work_h != st.height) else 0,
                     st.height if (st.work_w != st.width or st.work_h != st.height) else 0,
-                    st.worker_stop, st.shm)
+                    st.worker_stop, st.shm, exe=_exe, cwd=_cwd)
                 channels.forget_present(st)
                 channels.forget_dda(st)
                 channels.forget_out(st)

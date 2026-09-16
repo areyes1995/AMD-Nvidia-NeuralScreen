@@ -590,12 +590,13 @@ def drain_commands(st) -> bool:
                         st.next_auto_revive = 0.0
                         print("[main] reviving the worker after the failure")
                         try:
+                            _exe, _cwd = pipeline.worker_target(st)
                             st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
                                 st.worker, st.params, st.work_w, st.work_h,
                                 st.effective_warmup,
                                 st.width if (st.work_w != st.width or st.work_h != st.height) else 0,
                                 st.height if (st.work_w != st.width or st.work_h != st.height) else 0,
-                                st.worker_stop, st.shm)
+                                st.worker_stop, st.shm, exe=_exe, cwd=_cwd)
                             channels.forget_present(st)
                             channels.forget_dda(st)
                             channels.forget_out(st)

@@ -37,7 +37,7 @@ from capture import (ScreenCapture, _refresh_dxcam_factory,
 from display import Display
 from guides import TemporalGuideGenerator
 from i18n import STRINGS as UI_STRINGS
-from paths import NATIVE_DIR, WORKER_EXE
+from paths import AMD_NATIVE_DIR, AMD_WORKER_EXE, NATIVE_DIR, WORKER_EXE
 from protocol import (HEADER_FMT, VIDEO_MAGIC, SharedFrameBuffer,
                       WorkerReader, _negotiate_shm, send_dda, send_resize)
 from settings_io import _work_size, hotkey_labels, nr_verdict
@@ -120,28 +120,45 @@ def _drain_stderr(worker, logs: list[str], stop: threading.Event) -> None:
         pass
 
 
+def worker_target(st) -> tuple:
+    """(exe, cwd) for this pipeline's backend: NVIDIA or AMD.
+
+    getattr-defaults keep old test doubles working: anything without a
+    backend is the NVIDIA pipeline the code was written for.
+    """
+    if getattr(st, "backend", "nvidia") == "amd":
+        return AMD_WORKER_EXE, AMD_NATIVE_DIR
+    return WORKER_EXE, NATIVE_DIR
+
+
 def start_worker(params: dict, width: int, height: int, warmup: int,
                  full_w: int = 0, full_h: int = 0,
-                 shm: "SharedFrameBuffer | None" = None) -> tuple[subprocess.Popen, list[str]]:
+                 shm: "SharedFrameBuffer | None" = None,
+                 exe=None, cwd=None) -> tuple[subprocess.Popen, list[str]]:
     """Start the NGX worker in --live mode and send the header.
 
     width/height is the work resolution (the NGX feature), full_w/full_h is
     the size of the input frames coming from Python (the worker resizes them
     on the GPU through NGX Upscaling; full_w=0 -> the old 1:1 mode).
 
+    exe/cwd select the backend binary (default: the NVIDIA worker). The
+    AMD worker speaks the same protocol, so the spawn is shared.
+
     Returns (worker, logs, reader, stop): reader is the permanent stdout
     reader thread (see WorkerReader), stop is the event used to finish
     _drain_stderr on shutdown.
     """
-    if not WORKER_EXE.is_file():
+    if exe is None:
+        exe, cwd = WORKER_EXE, NATIVE_DIR
+    if not exe.is_file():
         raise FileNotFoundError(
-            f"worker not found: {WORKER_EXE}\n"
+            f"worker not found: {exe}\n"
             "Copy nvngx.dll (the built worker) and nvngx_dlssnr.dll into nvidia_mode/native/."
         )
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     worker = subprocess.Popen(
-        [str(WORKER_EXE), "--live"],
-        cwd=str(NATIVE_DIR),
+        [str(exe), "--live"],
+        cwd=str(cwd),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -180,7 +197,8 @@ def start_worker(params: dict, width: int, height: int, warmup: int,
 def restart_worker(worker: subprocess.Popen, params: dict, width: int, height: int,
                    warmup: int, full_w: int = 0, full_h: int = 0,
                    stop: threading.Event | None = None,
-                   shm: "SharedFrameBuffer | None" = None) -> tuple[subprocess.Popen, list[str], WorkerReader, threading.Event]:
+                   shm: "SharedFrameBuffer | None" = None,
+                   exe=None, cwd=None) -> tuple[subprocess.Popen, list[str], WorkerReader, threading.Event]:
     """Restart the worker at a new resolution (a work_scale change).
 
     The worker creates the NGX feature from the header sizes and reads exactly
@@ -200,7 +218,8 @@ def restart_worker(worker: subprocess.Popen, params: dict, width: int, height: i
     """
     shutdown_worker(worker, stop)
     time.sleep(2.0)
-    return start_worker(params, width, height, warmup, full_w, full_h, shm)
+    return start_worker(params, width, height, warmup, full_w, full_h, shm,
+                        exe=exe, cwd=cwd)
 
 
 def shutdown_worker(worker: subprocess.Popen, stop: threading.Event | None = None) -> None:
@@ -318,9 +337,10 @@ def rebuild_pipeline(st, note: str) -> None:
     # min(), not the constant: a pre-Blackwell card gets 4 and must keep
     # it (audit F3 - the restart storm the shortening exists to prevent).
     warmup = min(st.effective_warmup, RESTART_WARMUP)
+    _exe, _cwd = worker_target(st)
     st.worker, st.worker_logs, st.reader, st.worker_stop = start_worker(
         st.params, st.work_w, st.work_h, warmup, full_w, full_h,
-        st.shm)
+        st.shm, exe=_exe, cwd=_cwd)
     # The window and the menu are rebuilt, keeping the user settings.
     # A soft resize instead of close()+recreate: the old code went
     # through pygame.quit() and built a fresh window - the screen went
@@ -1057,9 +1077,11 @@ def do_restart(st, new_scale: float, new_profile: str, new_params: dict,
         # desktop). The RNSZ path above is fast and keeps the picture, so
         # it does not raise one.
         st.display.enter_switch_mode(st.output_rgba, *st.capture.resolution)
+        _exe, _cwd = worker_target(st)
         st.worker, st.worker_logs, st.reader, st.worker_stop = restart_worker(
             st.worker, st.params, new_w, new_h, RESTART_WARMUP,
-            new_full_w, new_full_h, st.worker_stop, st.shm)
+            new_full_w, new_full_h, st.worker_stop, st.shm,
+            exe=_exe, cwd=_cwd)
         channels.forget_present(st)
         # The new worker knows nothing about DDA/gray: reset the flags
         # so the main loop sends DDA1/GRAY again. Otherwise the frames

@@ -67,6 +67,7 @@ amd_mode/weights/*.bin
 amd_mode/weights/*.part
 # AMD HIP worker build artefacts (Phase 2)
 amd_mode/native/*.dll
+amd_mode/native/*.exe
 amd_mode/native/*.exp
 amd_mode/native/*.lib
 amd_mode/native/*.obj
