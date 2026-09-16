@@ -35,6 +35,27 @@ Legend: `[x]` done, `[ ]` pending. Backend selection: `NS_NR_BACKEND` /
 - [x] Live proof on RX 9070 XT: NR ON ~25 FPS, 3000+ frames, 0 restarts
 - [x] `tests/test_amd_backend.py` (selector matrix, params, weights)
 
+## Phase 2b-prep — Real inputs, stub dispatch (done 2026-09-16)
+
+- [x] Verified vs `dlss5-feed-host64.cpp`: feature-18 takes color + MV +
+      exposure + reset + tuning; NO depth, NO jitter (zero `DLSSNR.Depth`
+      refs, subrects fixed at 0)
+- [x] `amd_mode/native/nr_host_full.cpp` → `amd_nr_host.exe`: DIS motion
+      stats, PaperWhite adaptive exposure, reset counting, tuning record;
+      `DispatchPassthrough()` frozen for the HIP swap
+- [x] `tests/test_amd_full_worker.py` (passthrough + exp range + mv mean
+      + reset count + tuning ride-along)
+- [x] `.bin` format fully decoded (magic + count + data_start + 153
+      `{u8 len, name, u64 off, u64 size}` entries, contiguous, table + data
+      == file size): `amd_mode/python/dlssnr_weights.py`
+- [x] `amd_mode/python/executor.py` scaffold (`PassthroughExecutor`,
+      DirectML probe); `onnxruntime-directml` installed, DML provider
+      ready on this machine (plan B executable, graph still missing)
+- [x] `tests/test_amd_weights_exec.py` (synthetic tables + real 153-tensor
+      pack when present + probe shape)
+- [x] `docs/GPL_SOURCE_REQUEST.md`: §6 source request draft (issue + DM
+      versions) — sending it is the 2b unlock
+
 ## Phase 2b — Real HIP engine (pending, blocked on author source)
 
 - [ ] HIP engine source (graph + kernels) from the pack author
@@ -44,6 +65,8 @@ Legend: `[x]` done, `[ ]` pending. Backend selection: `NS_NR_BACKEND` /
 - [ ] SHM/DDA/GRAY/OUTS channels (kill the pipe cost → target 60+ FPS)
 - [ ] Multipass ×3 pre-SR + matched residual composite
 - [ ] DIS-flow → MV repack, flat depth, synthesized exposure
+      (SUPERSEDED: MV/exposure/reset are real in nr_host_full; depth is
+      not an input of this interface — do not synthesise it)
 - [ ] DXBC Gather/ResolveCS lighting integration
 - [ ] RNSZ live resize + watchdog/auto-revive parity
 - [ ] Perf targets: ~15–16 ms/job @720p, ~31 ms cold (field data)
@@ -56,8 +79,12 @@ Legend: `[x]` done, `[ ]` pending. Backend selection: `NS_NR_BACKEND` /
 - [ ] `System using:` live backend state (`neural pass: on (AMD)`)
 - [ ] Frame Generation on AMD: deferred (separate project, needs Streamline)
 
-## Phase 4 — Validation & release (pending)
+## Phase 4 — Validation & release (in progress)
 
+- [x] `tools/ab_compare.py` A/B harness (pan/dark/cut scenes, FPS +
+      integrity + telemetry) + `docs/ab_baseline_amd.json`
+      (515–558 FPS pipe round-trip, byte-identical, exp/mv/reset OK)
+- [ ] NVIDIA baseline (`ab_baseline_nvidia.json`, needs NVIDIA machine)
 - [ ] Quality A/B vs NVIDIA worker (Before/after wipe harness)
 - [ ] Perf table (eval ms vs MPix, per TECHNICAL.md method)
 - [ ] Soak/stability runs + timeout/recovery parity with field spec

@@ -1,0 +1,37 @@
+{
+  "backend": "amd-passthrough",
+  "exe": "amd_mode/native/amd_nr_host.exe",
+  "scenes": {
+    "pan": {
+      "ok": true,
+      "fps": 525.3,
+      "byte_identical": true,
+      "hash_first": "2a736c1fe87ef350",
+      "hash_last": "ec6733b7c17138c0",
+      "hash_changes": 119
+    },
+    "dark": {
+      "ok": true,
+      "fps": 557.8,
+      "byte_identical": true,
+      "hash_first": "6d6b8d63ce0610a2",
+      "hash_last": "6d6b8d63ce0610a2",
+      "hash_changes": 0
+    },
+    "cut": {
+      "ok": true,
+      "fps": 515.6,
+      "byte_identical": true,
+      "hash_first": "2a736c1fe87ef350",
+      "hash_last": "ec6733b7c17138c0",
+      "hash_changes": 119
+    }
+  },
+  "ok": true,
+  "telemetry": {
+    "frames": 360,
+    "exposure": 0.695,
+    "mv_mean": 4.0,
+    "resets": 1
+  }
+}
