@@ -84,8 +84,20 @@ Legend: `[x]` done, `[ ]` pending. Backend selection: `NS_NR_BACKEND` /
       engine writes straight into the output section
 - [x] Clean exit: the worker leaves without running the hosted runtime's
       teardown (it was failing fast, 0xC0000409, on a normal session end)
+- [x] The pass is visible and controllable: linear fp16 colour (it was being
+      handed sRGB and answering with a tone curve), `Scale` calibrated from
+      3% to 0.03 of real strength, and the menu bridged into the runtime ini
+      (`SetEffect`) - the sliders did nothing on AMD before that
+- [x] `tests/test_amd_hip_engine.py` measures the network's contribution
+      beyond a tone curve, which is what "it runs but nothing shows" looks
+      like from the outside (0.56/255 broken vs 3.2/255 now)
 - [ ] Next for FPS: DDA capture inside the worker (grab 5 ms + guides 7 ms +
-      show 10 ms are all still Python-side per frame)
+      show 7 ms are all still Python-side per frame)
+- [x] Quality: two dispatches per frame - A (work->work, with motion vectors)
+      is the one the runtime follows, B (work->output, no motion vectors) is
+      the FSR upscale it ignores. The network sees an unresampled frame at
+      the scale the slider asks for, FSR does the upscale, and at scale 1.0
+      nothing is resampled at all. 14.7 FPS at 1440p with the detail intact
 - [ ] Not shippable as-is (third-party runtime + NVIDIA-derived weights)
 
 ### Route B — own engine from the GPL source (blocked on author source)

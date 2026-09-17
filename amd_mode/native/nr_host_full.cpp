@@ -182,6 +182,20 @@ struct Dispatch {
     uint32_t auto_mask = 0, style = 0, ui_correction = 0;
 };
 
+// The menu's effect values as the hosted runtime wants them. Everything the
+// header carries that the runtime has a knob for; `intensity` becomes its
+// `Scale`, the strength of the network's contribution.
+nsamd::EffectParams EffectFromHeader(const Header& h) {
+    nsamd::EffectParams p;
+    p.intensity = h.intensity;
+    p.local_tone = h.local_tone;
+    p.local_structure = h.local_structure;
+    p.skin_structure = h.skin_structure;
+    p.auto_mask = h.auto_mask;
+    p.tone_channels = 0;
+    return p;
+}
+
 constexpr uint32_t kOutBytesInShm = 0xFFFFFFFFu;  // OUT1.bytes sentinel
 constexpr uint32_t kFlagShm = 0x1;                // FRM1: colour is in SHMI
 
@@ -373,6 +387,9 @@ static int RunWorker(int argc, char** argv) {
                     why.c_str());
             return;
         }
+        // The menu's effect values, before the runtime loads: it reads them
+        // from its own ini, so this is the only way they reach it.
+        engine.SetEffect(EffectFromHeader(hdr));
         engine_thread = std::thread([&engine, &engine_live, nw, nh, ow, oh] {
             std::string why;
             if (engine.Start(nw, nh, ow, oh, why)) {
@@ -615,9 +632,11 @@ static int RunWorker(int argc, char** argv) {
             hdr = r;  // tuning params follow the resize
             fprintf(stderr, "[host] amd full: resize %ux%u full %ux%u\n",
                     work_w, work_h, full_w, full_h);
-            // Nothing to do for the engine here: the frame path resizes it,
-            // which also covers a resize that lands while it is still coming
-            // up on its own thread.
+            // The geometry is handled on the frame path (which also covers a
+            // resize that lands while the engine is still coming up), but the
+            // effect values ride along with RNSZ and the runtime only ever
+            // sees them through its ini.
+            if (engine_tried) engine.SetEffect(EffectFromHeader(hdr));
             SendAck(kRack, 1, 0);
         } else if (magic == kWndo) {
             Small m{};

@@ -126,6 +126,7 @@ private:
     uint32_t work_w_ = 0, work_h_ = 0;
     uint32_t out_w_ = 0, out_h_ = 0;
     EffectParams effect_{};
+    bool ini_written_ = false;
     std::string ini_path_;
 };
 

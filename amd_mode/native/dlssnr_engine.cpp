@@ -197,6 +197,7 @@ UINT Groups(UINT n) { return (n + 7) / 8; }
 }  // namespace
 
 struct DlssNrEngine::Impl {
+    std::wstring home;      // where version.dll, the weights and the ini live
     HMODULE proxy = nullptr;
     HMODULE upscaler = nullptr;
     PfnFfxCreateContext create = nullptr;
@@ -223,14 +224,16 @@ struct DlssNrEngine::Impl {
     ID3D12Resource* color = nullptr;  // RGBA8 at work res: the network's input
     ID3D12Resource* depth = nullptr;  // R32F, flat: a desktop frame has none
     ID3D12Resource* mv = nullptr;     // RG16F, zeroed for the same reason
-    ID3D12Resource* out = nullptr;    // RGBA8 at out res, what the network wrote
+    ID3D12Resource* net = nullptr;    // fp16 at work res: what the network wrote
+    ID3D12Resource* out = nullptr;    // fp16 at out res: the upscaled frame
     ID3D12Resource* bgra = nullptr;   // RGBA8 holding BGRA bytes, for readback
     ID3D12Resource* upload = nullptr;
     ID3D12Resource* readback = nullptr;
     UINT upload_pitch = 0, readback_pitch = 0;
     UINT64 upload_bytes = 0, readback_bytes = 0;
 
-    ffxContext ffx = nullptr;
+    ffxContext ffx = nullptr;       // A: where the network runs
+    ffxContext ffx_up = nullptr;    // B: the upscale to the display, if any
 
     bool CreateDeviceObjects(uint32_t out_w, uint32_t out_h, std::string& why);
     bool CreatePipeline(std::string& why);
@@ -389,24 +392,39 @@ bool DlssNrEngine::Impl::CreateFrameObjects(uint32_t work_w, uint32_t work_h,
     mv = Tex(device, work_w, work_h, DXGI_FORMAT_R16G16_FLOAT,
              D3D12_RESOURCE_FLAG_NONE,
              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    // The upscaler's output stays at WORK resolution on purpose. The runtime
-    // takes its colour from the dispatch output, not from the input, so this
-    // is the only thing that decides what the network costs: with the output
-    // at 2560x1440 it spent 45-49 ms a frame whatever the render size, and
-    // the scale slider did nothing. At work resolution the slider is the
-    // control it was meant to be, and the last step back up to the output
-    // size is the resample pass below.
+    // Two dispatches, and the split is the whole design.
     //
-    // It also has to carry a typed UAV store for the runtime's residual
-    // apply, which B8G8R8A8 does not guarantee - hence RGBA8 here and one
-    // GPU pass to put the channels back in protocol order.
-    out = Tex(device, work_w, work_h, DXGI_FORMAT_R16G16B16A16_FLOAT,
+    // The runtime takes its colour from the output of the dispatch it
+    // follows, and it follows the one that carries motion vectors ("ignoring
+    // upscaler dispatches without motion vectors", in its own words). So:
+    //
+    //   A: work -> work, motion vectors bound. The runtime processes this,
+    //      which means the network runs at the work resolution - what the
+    //      scale slider asks for - on a frame that has not been resampled.
+    //   B: work -> output, no motion vectors. The runtime ignores it and FSR
+    //      upscales the network's result to the display resolution.
+    //
+    // At scale 1.0 the work resolution IS the output resolution: the network
+    // sees the full frame, B does not exist, and nothing is resampled at all.
+    // The version before this ran the network on a downscaled frame and then
+    // stretched the result with a bilinear - no fine detail left to enhance,
+    // and soft on top of it.
+    //
+    // fp16 and not B8G8R8A8 because the runtime's residual apply needs a
+    // typed UAV store, which BGRA does not guarantee.
+    net = Tex(device, work_w, work_h, DXGI_FORMAT_R16G16B16A16_FLOAT,
               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
               D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    const bool upscaling = (work_w != out_w || work_h != out_h);
+    out = upscaling
+        ? Tex(device, out_w, out_h, DXGI_FORMAT_R16G16B16A16_FLOAT,
+              D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+              D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+        : nullptr;
     bgra = Tex(device, out_w, out_h, DXGI_FORMAT_R8G8B8A8_UNORM,
                D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    if (!src || !color || !depth || !mv || !out || !bgra) {
+    if (!src || !color || !depth || !mv || !net || !bgra || (upscaling && !out)) {
         why = "frame textures failed"; return false;
     }
 
@@ -436,8 +454,10 @@ bool DlssNrEngine::Impl::CreateFrameObjects(uint32_t work_w, uint32_t work_h,
     uav.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     device->CreateUnorderedAccessView(color, nullptr, &uav, h);
     h.ptr += heap_step;
+    // The last pass reads whatever the frame ended up in: the upscaler's
+    // output when there is one, the network's own when work == output.
     srv.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-    device->CreateShaderResourceView(out, &srv, h);
+    device->CreateShaderResourceView(upscaling ? out : net, &srv, h);
     h.ptr += heap_step;
     uav.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     device->CreateUnorderedAccessView(bgra, nullptr, &uav, h);
@@ -452,6 +472,8 @@ bool DlssNrEngine::Impl::CreateFrameObjects(uint32_t work_w, uint32_t work_h,
     // changes how the upscaler and the hooked network read it.
     desc.flags = FFX_UPSCALE_ENABLE_AUTO_EXPOSURE |
                  FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE;
+    // A: where the network runs. 1:1, because its job is to be the dispatch
+    // the runtime follows, not to scale anything.
     desc.maxRenderSize = { work_w, work_h };
     desc.maxUpscaleSize = { work_w, work_h };
     ffxReturnCode_t rc = create(&ffx, &desc.header, nullptr);
@@ -462,14 +484,34 @@ bool DlssNrEngine::Impl::CreateFrameObjects(uint32_t work_w, uint32_t work_h,
         why = buf;
         return false;
     }
+    if (upscaling) {
+        // B: the upscale to the display, with no motion vectors so the
+        // runtime leaves it alone.
+        ffxCreateContextDescUpscale up{};
+        up.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
+        up.header.pNext = &backend.header;
+        up.flags = desc.flags;
+        up.maxRenderSize = { work_w, work_h };
+        up.maxUpscaleSize = { out_w, out_h };
+        rc = create(&ffx_up, &up.header, nullptr);
+        if (rc != FFX_API_RETURN_OK) {
+            char buf[80];
+            snprintf(buf, sizeof(buf), "ffxCreateContext (upscale) returned %u", rc);
+            ffx_up = nullptr;
+            why = buf;
+            return false;
+        }
+    }
     return true;
 }
 
 void DlssNrEngine::Impl::DestroyFrameObjects() {
     if (ffx && destroy) destroy(&ffx, nullptr);
+    if (ffx_up && destroy) destroy(&ffx_up, nullptr);
     ffx = nullptr;
+    ffx_up = nullptr;
     Rel(readback); Rel(upload);
-    Rel(bgra); Rel(out); Rel(mv); Rel(depth); Rel(color); Rel(src);
+    Rel(bgra); Rel(out); Rel(net); Rel(mv); Rel(depth); Rel(color); Rel(src);
 }
 
 bool DlssNrEngine::Impl::Present() {
@@ -493,9 +535,13 @@ void DlssNrEngine::Impl::WaitGpu(DWORD ms) {
 }
 
 void DlssNrEngine::SetEffect(const EffectParams& p) {
-    if (p == effect_ && !ini_path_.empty()) return;
+    // `written` and not "the values differ": the first call usually carries
+    // the defaults, and comparing against a default-constructed member meant
+    // the ini was never written at all in exactly that case.
+    if (ini_written_ && p == effect_) return;
     effect_ = p;
     WriteIni();
+    ini_written_ = true;
 }
 
 void DlssNrEngine::WriteIni() const {
@@ -506,7 +552,12 @@ void DlssNrEngine::WriteIni() const {
     // either - with 0 the upscaler hook is never armed and no frame is ever
     // processed, silently.
     char env[32];
-    float scale_max = 0.25f;
+    // What Intensity 1.0 means, calibrated on real content rather than
+    // guessed: 0.125 (the runtime's own ceiling) turns a photograph into
+    // halos and crunch, 0.005 is invisible, ~0.03 is where skin, hair and
+    // fabric gain detail with no ringing and no colour cast. The slider
+    // spans [0, this]; NS_AMD_NR_SCALE_MAX moves the top for taste.
+    float scale_max = 0.03f;
     if (GetEnvironmentVariableA("NS_AMD_NR_SCALE_MAX", env, sizeof(env))) {
         float v = (float)atof(env);
         if (v > 0.0f && v <= 4.0f) scale_max = v;
@@ -539,6 +590,10 @@ void DlssNrEngine::WriteIni() const {
             intensity * scale_max, effect_.local_tone, effect_.local_structure,
             effect_.skin_structure, effect_.auto_mask, effect_.tone_channels);
     fclose(f);
+    Say("effect -> %s: Scale=%.5f (intensity %.2f x max %.3f), tone %.2f, "
+        "structure %.2f, skin %.2f, mask %u", ini_path_.c_str(),
+        intensity * scale_max, intensity, scale_max, effect_.local_tone,
+        effect_.local_structure, effect_.skin_structure, effect_.auto_mask);
 }
 
 DlssNrEngine::~DlssNrEngine() { Stop(); }
@@ -595,42 +650,32 @@ bool DlssNrEngine::Start(uint32_t work_w, uint32_t work_h,
     if (!work_w || !work_h || !out_w || !out_h) { why = "zero frame size"; return false; }
     if (!impl_ || !impl_->hwnd) { why = "Prepare() was not called first"; return false; }
 
-    // The runtime keeps its ini, its log and its weights next to itself, so
-    // wherever it is found is also where the rest has to live. Order: an
-    // explicit path, the worker's own folder, then the BYO weights folder,
-    // which is where amd_mode/weights/README.md tells people to put things.
+    // Prepare() found where the runtime lives and wrote its ini there; the
+    // settings have to be on disk before it loads, because that is how the
+    // menu's values reach it.
     const std::wstring dir = ExeDir();
-    std::wstring home;
-    uint64_t log_from = 0;
-    wchar_t env[MAX_PATH];
-    std::wstring candidates[3];
-    int n_candidates = 0;
-    if (GetEnvironmentVariableW(L"NS_AMD_NR_RUNTIME", env, MAX_PATH)) {
-        std::wstring p = env;
-        if (!p.empty() && p.back() != L'\\') p += L'\\';
-        candidates[n_candidates++] = p;
-    }
-    candidates[n_candidates++] = dir;
-    candidates[n_candidates++] = dir + L"..\\weights\\";
+    const std::wstring home = impl_->home;
     // NS_AMD_NR_FSR_ONLY=1 builds the same pipeline without the neural
     // runtime in it. It exists to answer "is this the network or the
     // upscaler?" about anything we see in the picture, which is not a
     // question you can answer by staring at one image.
     const bool fsr_only = EnvUint("NS_AMD_NR_FSR_ONLY", 0) != 0;
-    for (int i = 0; i < n_candidates && !impl_->proxy && !fsr_only; ++i) {
-        const std::wstring path = candidates[i] + kProxyName;
-        if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
-        home = candidates[i];
+    uint64_t log_from = 0;
+    if (!fsr_only) {
+        const std::wstring path = home + kProxyName;
+        if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            why = "no DLSS-NR runtime (version.dll) beside the worker or in "
+                  "amd_mode/weights";
+            return false;
+        }
         // Before the load, so the hook lines we wait for are this run's.
         log_from = FileSize(ToUtf8(home + L"dlssnr_on_amd.log"));
         impl_->proxy = LoadLibraryW(path.c_str());
-    }
-    if (!impl_->proxy && !fsr_only) {
-        why = "no DLSS-NR runtime (version.dll) beside the worker or in amd_mode/weights";
-        return false;
-    }
-    if (fsr_only) {
-        home = dir + L"..\\weights\\";
+        if (!impl_->proxy) {
+            why = "the DLSS-NR runtime is there but would not load";
+            return false;
+        }
+    } else {
         Say("NS_AMD_NR_FSR_ONLY=1: upscaler only, no neural runtime");
     }
     impl_->upscaler = LoadLibraryW((home + kUpscalerName).c_str());
@@ -769,7 +814,7 @@ bool DlssNrEngine::Dispatch(const uint8_t* bgra_in, uint8_t* bgra_out,
     dd.color = ffxApiGetResourceDX12(s.color, FFX_API_RESOURCE_STATE_COMPUTE_READ);
     dd.depth = ffxApiGetResourceDX12(s.depth, FFX_API_RESOURCE_STATE_COMPUTE_READ);
     dd.motionVectors = ffxApiGetResourceDX12(s.mv, FFX_API_RESOURCE_STATE_COMPUTE_READ);
-    dd.output = ffxApiGetResourceDX12(s.out, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
+    dd.output = ffxApiGetResourceDX12(s.net, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
     dd.jitterOffset = { 0.0f, 0.0f };
     dd.motionVectorScale = { (float)work_w_, (float)work_h_ };
     dd.renderSize = { work_w_, work_h_ };
@@ -790,8 +835,45 @@ bool DlssNrEngine::Dispatch(const uint8_t* bgra_in, uint8_t* bgra_out,
         return false;
     }
 
-    // Pass 2: the network's output into protocol channel order, on the GPU.
-    Barrier(s.cl, s.out, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+    // B: the upscale to the display, only when there is one to do. No motion
+    // vectors on purpose - that is how the runtime knows this dispatch is not
+    // the one to process, so the network is not charged for it.
+    ID3D12Resource* result = s.net;
+    if (s.ffx_up) {
+        Barrier(s.cl, s.net, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        ffxDispatchDescUpscale ud{};
+        ud.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
+        ud.commandList = s.cl;
+        ud.color = ffxApiGetResourceDX12(s.net, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+        ud.depth = ffxApiGetResourceDX12(s.depth, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+        ud.motionVectors = ffxApiGetResourceDX12(nullptr);
+        ud.output = ffxApiGetResourceDX12(s.out, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
+        ud.jitterOffset = { 0.0f, 0.0f };
+        ud.motionVectorScale = { 0.0f, 0.0f };
+        ud.renderSize = { work_w_, work_h_ };
+        ud.upscaleSize = { out_w_, out_h_ };
+        ud.enableSharpening = false;
+        ud.frameTimeDelta = p.frame_time_ms;
+        ud.preExposure = 1.0f;
+        ud.reset = p.reset != 0;
+        ud.cameraNear = 0.1f;
+        ud.cameraFar = 1000.0f;
+        ud.cameraFovAngleVertical = 1.0f;
+        ud.viewSpaceToMetersFactor = 1.0f;
+        rc = s.dispatch(&s.ffx_up, &ud.header);
+        if (rc != FFX_API_RETURN_OK) {
+            s.cl->Close();
+            Say("the upscale dispatch returned %u on frame %u", rc, p.index);
+            return false;
+        }
+        result = s.out;
+    }
+
+    // Pass 2: the frame into protocol channel order and back to sRGB, on the
+    // GPU. `result` is the upscaler's output, or the network's own when there
+    // was nothing to upscale.
+    Barrier(s.cl, result, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     s.cl->SetDescriptorHeaps(1, heaps);
     s.cl->SetComputeRootSignature(s.root);
@@ -821,8 +903,12 @@ bool DlssNrEngine::Dispatch(const uint8_t* bgra_in, uint8_t* bgra_out,
     // Back to the states the next frame starts from.
     Barrier(s.cl, s.bgra, D3D12_RESOURCE_STATE_COPY_SOURCE,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    Barrier(s.cl, s.out, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+    Barrier(s.cl, result, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    if (s.ffx_up) {  // `net` was read by the upscale, not by pass 2
+        Barrier(s.cl, s.net, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }
     Barrier(s.cl, s.color, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     Barrier(s.cl, s.src, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,

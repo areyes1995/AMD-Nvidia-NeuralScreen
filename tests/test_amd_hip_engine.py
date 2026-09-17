@@ -17,6 +17,7 @@ See docs/AMD_HIP_HOSTING.md for what the runtime is and why it is hosted
 this way.
 """
 import os
+import random
 import re
 import struct
 import subprocess
@@ -41,16 +42,50 @@ FRAMES = 12
 
 
 def scene(w: int, h: int) -> bytes:
-    """A red-leaning lit gradient: bright enough for the pass to have work,
-    lopsided enough in colour that a channel swap cannot hide."""
+    """A red-leaning lit gradient with fine texture on top.
+
+    The texture is the point. A flat gradient gives the network nothing to
+    work with, so it returns almost exactly what it was handed and the test
+    passes while the pass does nothing - which is how a 3%-strength setting
+    went unnoticed. Detail at the pixel level is what it reacts to.
+    """
+    rnd = random.Random(7)
     out = bytearray()
     for y in range(h):
         for x in range(w):
             r = 90 + int(140 * x / max(w - 1, 1))
             g = 40 + int(60 * y / max(h - 1, 1))
             b = 30
+            grain = rnd.randint(-28, 28)
+            if (x // 4 + y // 4) % 2 == 0:      # a fine checker for edges
+                grain += 22
+            r = min(255, max(0, r + grain))
+            g = min(255, max(0, g + grain))
+            b = min(255, max(0, b + grain))
             out += bytes((b, g, r, 255))  # BGRA on the wire
     return bytes(out)
+
+
+def spatial_contribution(src: bytes, out: bytes, w: int, h: int) -> float:
+    """How much of the change is the NETWORK, in 0..255.
+
+    Anything the pass does to a pixel purely because of its value - exposure,
+    a tone curve - is a function of that value alone. Subtracting the best
+    such curve leaves what depended on the neighbourhood, which is the part
+    only the network can produce. Measured on the green channel; the fixture
+    is far too small to be worth a full luma conversion.
+    """
+    buckets_sum = [0.0] * 256
+    buckets_n = [0] * 256
+    for i in range(1, len(src), 4):        # G, one channel is enough
+        buckets_sum[src[i]] += out[i]
+        buckets_n[src[i]] += 1
+    curve = [buckets_sum[v] / buckets_n[v] if buckets_n[v] else float(v)
+             for v in range(256)]
+    total = 0.0
+    for i in range(1, len(src), 4):
+        total += abs(out[i] - curve[src[i]])
+    return total / (len(src) / 4)
 
 
 def means(buf: bytes):
@@ -157,6 +192,15 @@ def main() -> int:
           f"channel order survived: out B={ob:.1f} G={og:.1f} R={orr:.1f} "
           f"(in B={ib:.1f} G={ig:.1f} R={ir:.1f})")
 
+    spatial = spatial_contribution(colour, last, W, H)
+    print(f"network contribution beyond a tone curve: {spatial:.2f}/255")
+    # The bar exists because of a real regression: with the runtime's shipped
+    # strength (Scale=0.03125, ~3%) the pass left 0.56/255 here - it ran, the
+    # bytes differed, and nothing was visible. Anything the eye can see is
+    # several times that.
+    check(spatial > 1.5,
+          f"the network contributes beyond a tone curve ({spatial:.2f}/255)")
+
     # Every [nr] line, not the first: the pass takes over mid-session, so the
     # early lines legitimately read neural=0.
     counts = [int(n) for n in re.findall(r"\[nr\].*neural=(\d+)", err)]
@@ -164,7 +208,10 @@ def main() -> int:
           f"telemetry counts neural frames (saw {counts[-3:] or 'no [nr] line'})")
 
     if RUNTIME_LOG.exists():
-        tail = RUNTIME_LOG.read_text("utf-8", "replace")[before:]
+        # The runtime truncates its log on some starts, so an offset taken
+        # before the run can be past the end of the file now.
+        text = RUNTIME_LOG.read_text("utf-8", "replace")
+        tail = text[before:] if len(text) > before else text
         check("engine init ok" in tail, "runtime logged 'engine init ok'")
         job = re.search(r"network job \d+ done in (\d+) ms", tail)
         if job:

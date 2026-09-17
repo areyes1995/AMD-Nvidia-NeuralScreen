@@ -1,11 +1,17 @@
-# NeuralScreen
+# NeuralScreen — AMD version
 
 **NVIDIA's DLSS 5 neural renderer, applied to your whole Windows desktop in
 real time.** Everything on screen — games, video, photos — goes through the
 same neural network that DLSS 5 games use, and comes back sharper.
 
+**This fork adds Radeon.** The neural pass is no longer NVIDIA-only: on an
+RX 7000 or RX 9000 card it runs for real, on the GPU, through a HIP engine
+hosted inside the AMD worker. The NVIDIA path is untouched — same code, same
+behaviour, same numbers. See [What the AMD version adds](#what-the-amd-version-adds).
+
 > The guide below gets you running. How it works and what was measured:
-> **[TECHNICAL.md](TECHNICAL.md)**. Русская версия:
+> **[TECHNICAL.md](TECHNICAL.md)**; the AMD engine has its own write-up,
+> **[docs/AMD_HIP_HOSTING.md](docs/AMD_HIP_HOSTING.md)**. Русская версия:
 > **[README.ru.md](README.ru.md)** / **[TECHNICAL.ru.md](TECHNICAL.ru.md)**.
 
 > **Notice.** Not affiliated with NVIDIA; NVIDIA, DLSS and the NVIDIA logo
@@ -34,38 +40,87 @@ screen down the middle.*
 ## What you need
 
 - **Windows 11**, or Windows 10 — reported working.
-- **An NVIDIA RTX card:**
+- **A card that can run the neural pass:**
 
   | Cards | Status |
   |---|---|
   | **RTX 50** / **RTX 40** / **RTX 30** | ✅ works |
   | **RTX 20** (Turing) | ❌ below the minimum architecture — the program starts, the picture is not processed |
   | **Hybrid laptops (Optimus)** | ✅ works; on the iGPU display the capture falls back to a slower path |
+  | **Radeon RX 9000** (RDNA4) / **RX 7000** (RDNA3) | ✅ works, with files you supply yourself — see [What the AMD version adds](#what-the-amd-version-adds). Verified on an RX 9070 XT |
+  | **Older Radeon, Intel, no dedicated GPU** | ⚠️ degraded mode: the program runs, the neural pass does not |
 
 - **The latest NVIDIA driver, and Windows up to date.** Not a formality: the
   neural runtime talks to the driver directly, and an old driver is the
   commonest reason it refuses to start or the picture never appears.
 - **Nothing installed.** The release archive brings its own Python.
 
-### Without an NVIDIA card (degraded mode)
+### Without an NVIDIA card
 
 The program detects your graphics hardware at startup — see the
 `System using: ...` line under the status row in the menu, and in
-`NeuralScreen.log` — and only enables the neural pipeline on NVIDIA:
+`NeuralScreen.log` — and picks the backend from it:
 
 - **NVIDIA present** — everything works as described here (30/40-series
   included, via the architecture hook documented in
   [TECHNICAL.md](TECHNICAL.md)).
-- **AMD / Intel / no NVIDIA card** — the program still opens, as a plain
-  `NeuralScreen (degraded)` control window with the menu, tray icon,
-  taskbar button and hotkeys, paced at your monitor's own refresh rate.
-  The neural functions (NR, Boost, Frame Generation, recording,
+- **Radeon RX 7000 / RX 9000** — the AMD worker takes over and the neural
+  pass runs on the Radeon, once you have put the four files it needs in
+  place. Until then it serves the picture through untouched and says so.
+- **Anything else (Intel, older Radeon, no dedicated GPU)** — the program
+  still opens, as a plain `NeuralScreen (degraded)` control window with the
+  menu, tray icon, taskbar button and hotkeys, paced at your monitor's own
+  refresh rate. The neural functions (NR, Boost, Frame Generation, recording,
   window/monitor/GPU switching) stay off and say so instead of failing:
   `Not available: worker missing`.
 
 Degraded mode also covers a machine where the native files are missing
 (`nvidia_mode/native/nvngx.dll`, `nvngx_dlssnr.dll`): same window, same disabled
 functions, and `System using:` still names your card.
+
+## What the AMD version adds
+
+Upstream, a Radeon got a window with everything switched off. Here the
+neural pass runs on it for real — because **Danielblnc**'s HIP engine, which
+runs the DLSS-NR network on RDNA3/RDNA4, ships as a `version.dll` proxy that
+hooks a game. So the AMD worker does not reimplement it: it *hosts* it.
+`amd_nr_host.exe` builds a D3D12 device, a hidden swapchain and a real FSR
+dispatch, and the runtime detours them exactly as it would a game's.
+
+Two dispatches go out per frame: the one with motion vectors is the one the
+runtime follows, so the network runs at the scale slider's resolution on an
+unresampled frame; the second has none, so the runtime ignores it and **FSR**
+upscales to your display. At full scale nothing is resampled at all.
+
+Measured on an RX 9070 XT at 2560×1440: **14.7 fps** at scale 0.65 (the
+network itself 23 ms, 43 ms at full scale), **+10%** fine detail on a sharp
+photo, and the pass takes over ~3.5 s after launch — frames flow untouched
+until then. It does what the network was trained for, **scene light and
+detail**: skin, hair, fabric, contact shadows. On photographs, video and game
+footage it shows; on a flat desktop it has nothing to add (measured: 0.56/255
+of contribution on a menu against 6.1/255 on a photograph). That is the
+domain, not a bug.
+
+Also here: the menu's effect sliders reach the AMD engine (they did nothing
+before), frames cross to the worker through shared memory rather than the
+pipe, and the worker exits cleanly. How all of it was found out, and every
+silent failure it steps around: **[docs/AMD_HIP_HOSTING.md](docs/AMD_HIP_HOSTING.md)**.
+
+### Running it on a Radeon
+
+The engine is a third party's binary and its weights derive from NVIDIA's, so
+**none of it ships here**. Put your own copies in `amd_mode/weights/`:
+`version.dll` (Danielblnc's runtime, the **standalone** build),
+`dlssnr_on_amd_weights.bin`, and `amd_fidelityfx_upscaler_dx12.dll` (AMD's FSR
+upscaler — the thing the runtime listens for). The `.ini` beside them is
+written by the worker from your menu settings.
+
+Then run with `NS_NR_BACKEND=amd`, or leave it on `auto` — with no NVIDIA card
+the AMD worker is the one that can run. `NS_AMD_NR=0` forces the untouched
+path for comparison; `NS_AMD_NR_SCALE_MAX` moves the top of the Intensity
+slider (0.03 is where detail appears without artefacts, past 0.06 it looks
+forced). Without those files nothing breaks: the worker names what is missing
+and passes your frames through.
 
 ## Install
 
@@ -209,6 +264,54 @@ settings — it is experimental; see [HDR setup](https://github.com/perseval-BLR
 - **Window mode:** panel blink and drag stutter were fixed in 1.11.0, taskbar
   reactivation in 1.12; the overlay can still drop behind on the first focus
   change.
+- **On AMD:** the pass costs more than on NVIDIA — ~15 fps at 1440p against
+  the NVIDIA path's 45–70 — because the frame still crosses Python twice
+  and the hosted engine works at display resolution. It also only earns its
+  keep on photographic content; a flat desktop gives it nothing to work
+  with. Verified on one card (RX 9070 XT) and one driver.
+
+## Where this is going
+
+The AMD pass works by hosting someone else's binary, and that is the thing to
+fix rather than celebrate. The engine is GPL-3.0-derived and ships without its
+source, so a §6 request is written and ready to send
+([docs/GPL_SOURCE_REQUEST.md](docs/GPL_SOURCE_REQUEST.md), one command:
+`python tools/send_gpl_request.py`) — with the kernels and the graph in the
+open, the AMD path could be built from source and actually shipped. Failing
+that, a plan B that owes nobody: the weights container is already decoded
+(153 tensors) and a DirectML executor is scaffolded; only the graph is
+missing. Then frames: capture and display still cross Python every frame, so
+doing the capture inside the worker is the next real win. Frame Generation on
+AMD stays deferred — it needs Streamline, which is a project of its own.
+
+Reports from other Radeon cards are welcome; this has only been run on an
+RX 9070 XT.
+
+## Credits
+
+This version stands on other people's work, most of it given freely:
+
+- **[perseval-BLR](https://github.com/perseval-BLR/DLSS5-NeuralScreen)** —
+  NeuralScreen itself: capture pipeline, overlay, menu, NVIDIA worker, and
+  everything this fork did not have to invent.
+- **Danielblnc** — *DLSS-NR on AMD*, the HIP engine that makes a neural pass
+  on Radeon possible at all. The AMD path here is a host for their work.
+- **[wilsjo2](https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass)** —
+  the OptiScaler AMD PreSR Multipass pack, and **permission (2026-09-16) to
+  reuse the DlssNr design** it documents: multipass structure, parameter
+  schema, bring-your-own-runtime model.
+- **[OptiScaler](https://github.com/optiscaler/OptiScaler)** and
+  **Dagherbou's Neural Rendering fork** — the upstream both packs build on.
+- **AMD** — the FidelityFX SDK (MIT headers vendored in
+  `amd_mode/third_party/ffx_api/`, and FSR does the upscaling here) and the
+  HIP runtime the engine calls.
+- **RenoDX** (colour work), **XeSS**, and **ShortFuse** (the cross-generation
+  310.8 runtime that keeps RTX 20/30/40 in the picture).
+- **NVIDIA** — DLSS and the runtimes, unmodified, under the notice above.
+- **IBM Plex** — the interface faces (OFL-1.1).
+
+Exact licences, hashes and the terms each piece arrived under:
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## License
 
@@ -217,3 +320,9 @@ property: `nvngx_dlssnr.dll` is the leaked 310.8.0 build (sm_75/86/89/120
 kernels, RTX 20-50), `nvngx_dlssg.dll` is the public 310.9.1.0
 redistributable — both as received, no guarantees, research-only. Interface
 faces: IBM Plex (OFL-1.1, `fonts/OFL.txt`).
+
+The AMD engine is **not** covered by any of that and is **not** distributed
+here: it is a third party's binary, loaded from your own copy, for research
+use. The code that hosts it (`amd_mode/native/`, `amd_mode/python/`) is MIT
+and clean-room; anything derived from GPL-3.0 sources lives under
+`amd_mode/third_party/` with its headers intact.

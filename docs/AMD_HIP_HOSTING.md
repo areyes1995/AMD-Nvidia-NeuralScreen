@@ -35,13 +35,13 @@ En `amd_mode/weights/` (o donde apunte `NS_AMD_NR_RUNTIME`):
 | `version.dll` | el runtime **standalone** de Danielblnc (v0.2.18 aquí) |
 | `dlssnr_on_amd_weights.bin` | los pesos (140,8 MB, magia `DLSSNRW1`) |
 | `amd_fidelityfx_upscaler_dx12.dll` | el upscaler FSR del pack (FFX API 4.1.1) |
-| `dlssnr_on_amd.ini` | ver abajo: **`UseFsrInputs=1` es obligatorio** |
+| `dlssnr_on_amd.ini` | **lo escribe el propio motor** desde el menú (`SetEffect`); esto es sólo la referencia |
 
 ```ini
 [DlssNrOnAmd]
 Enabled=1
 UseFsrInputs=1
-UseDepth=1
+UseDepth=0
 Interop=1
 Inline=1
 InlineWaitMs=200
@@ -50,7 +50,7 @@ LocalStructure=1
 SkinStructure=-1
 UseAutoMask=1
 ToneChannels=0
-Scale=0.03125
+Scale=0.03000
 Temporal=1
 Tonemap=-1
 HipDevice=-1
@@ -104,38 +104,56 @@ desensamblando el runtime y se pagan con silencio si se incumplen:
   frame antes de dar el worker por muerto, y levantar el motor cuesta más que
   eso repartido. Cuando está listo, el pase neuronal entra solo; la línea
   `[nr] … neural=N` cuenta los frames que pasaron por la red.
-- Los formatos: colour entra BGRA8 directo (sin swizzle en el camino caliente)
-  y la salida vuelve por un UAV RGBA8 — B8G8R8A8 no garantiza *typed UAV
-  store*, que es lo que el runtime necesita para aplicar el residual, así que
-  el swizzle se hace una sola vez, a la vuelta.
+- Los formatos: el frame entra BGRA8, un pase de compute lo pasa a **fp16
+  lineal** (lo que la red espera) y otro lo devuelve a sRGB en orden BGRA. La
+  salida del dispatch es fp16 porque el runtime necesita *typed UAV store*
+  para aplicar su residual, y B8G8R8A8 no lo garantiza.
 
-## La quinta trampa: dónde coge el color
+## La quinta trampa: dónde coge el color, y los dos dispatch
 
 El runtime toma su color de la **salida** del dispatch del upscaler, no de la
-entrada. Consecuencia práctica, medida: con la salida de FSR a 2560×1440 la red
-costaba **45–49 ms por frame pasara lo que pasara** con el `renderSize`, y el
-slider de escala no hacía absolutamente nada.
+entrada. Medido: con la salida de FSR a 2560×1440 la red costaba 45–49 ms
+pasara lo que pasara con el `renderSize`, y el slider de escala no hacía nada.
 
-Por eso el motor deja la salida de FSR a **resolución de trabajo** y es nuestro
-propio pase de compute el que sube a la resolución final. Con eso la red cuesta
-lo que el slider dice:
+Pero hay una segunda frase suya que lo resuelve del todo: *"ignoring upscaler
+dispatches without motion vectors … following the one with motion vectors"*.
+Sigue el dispatch que lleva motion vectors e ignora los demás. De ahí el
+diseño final, **dos dispatch por frame**:
 
-| Escala | Red | Red @ salida 1440p (antes) |
-| --- | --- | --- |
-| 0,65 → 1664×936 | 20 ms | 45 ms |
-| 0,50 → 1280×720 | 14 ms | 46 ms |
-| 0,35 → 896×504 | 9 ms | 47 ms |
+| | resolución | motion vectors | quién lo procesa |
+| --- | --- | --- | --- |
+| **A** | trabajo → trabajo (1:1) | sí | la red neuronal |
+| **B** | trabajo → salida | **no** | sólo FSR (el runtime lo ignora) |
+
+Con eso: la red corre a la resolución de trabajo (lo que pide el slider) sobre
+un frame **sin reescalar**, y el salto a la resolución del monitor lo hace FSR.
+A escala 1.0 la resolución de trabajo *es* la de salida: B no existe y no se
+reescala nada en todo el camino.
+
+La versión intermedia —red a resolución de trabajo y un bilineal nuestro para
+subir— es la que se veía mal: la red recibía un frame reducido, así que no
+quedaba detalle fino que realzar, y encima el bilineal emborronaba el
+resultado.
+
+Medido sobre una foto nítida (1280×1704, detalle = energía de alta frecuencia):
+
+| Escala | red corre a | detalle vs entrada | ms/frame |
+| --- | --- | --- | --- |
+| 1,00 | 1280×1704 | **1,10×** | 43,4 |
+| 0,65 | 832×1104 | 0,90× | 30,1 |
+| 0,50 | 640×848 | 0,99× | 25,5 |
 
 ## Medido aquí
 
-En la app completa, monitor 2560×1440, escala 0,50 (red a 1280×720):
+En la app completa, monitor 2560×1440, escala 0,65 (red a 1664×936):
 
 | Qué | Antes | Ahora |
 | --- | --- | --- |
-| FPS | 7,6 | **17,2** |
-| `send` (Python → worker) | 14,2 ms | 2,2 ms (SHMI) |
-| `recv` (worker → Python) | 92–131 ms | 30,4 ms (OUTS + red a work res) |
-| Red sola | 45–49 ms | 14 ms |
+| FPS | 7,6 | **14,7** |
+| `send` (Python → worker) | 14,2 ms | 2,3 ms (SHMI) |
+| `recv` (worker → Python) | 92–131 ms | 41,6 ms (OUTS + los dos dispatch) |
+| Red sola | 45–49 ms | 23 ms |
+| Imagen | reescalada dos veces, sin detalle | sin reescalar para la red, upscale de FSR |
 
 Y en el worker aislado: red 6 ms a 320×180, 36 ms el primer job (carga de
 kernels); hooks del runtime ~450 ms; motor listo ~3,4 s (passthrough mientras
@@ -156,6 +174,58 @@ worker AMD ahora acepta los dos canales que Python ya ofrecía y antes rechazaba
 
 `GRAY` sigue rechazado a propósito: es el canal de luminancia del modo DDA y
 este worker no captura la pantalla por su cuenta.
+
+## Por qué el pase "no se veía" (y por qué se veía mal)
+
+Tres cosas distintas, encontradas midiendo, no mirando:
+
+**1. Espacio de color.** El juego le da al runtime color **HDR lineal fp16**
+(su log: `colour dxgi 10 … tonemap 1`); nosotros le dábamos sRGB de 8 bits
+(`dxgi 28 … tonemap 0`). Con eso aplicaba una curva de tono que aplastaba las
+luces (−48/255 en el extremo alto) mientras su aporte real era de 0,67/255.
+Es decir: lo único visible era el daño. El pase pre/post ahora convierte
+sRGB→lineal a la entrada y lineal→sRGB a la salida, y el runtime reporta
+exactamente lo mismo que en el juego.
+
+**2. La fuerza estaba al 3%.** `Scale` en el ini del runtime es la fuerza de
+la red. El valor que traía la instalación era `0.03125`. Medido sobre una
+imagen con detalle, aislando lo que aporta la red (quitando la curva de tono,
+que sólo depende del valor del píxel):
+
+| Scale | aporte de la red | veredicto |
+| --- | --- | --- |
+| 0.005 | 1,0/255 | invisible |
+| 0.03 | 6,1/255 | **detalle real: piel, pelo, tejido** |
+| 0.125 (tope del runtime) | 55/255 | halos, crujido, fringing |
+
+**3. Los mandos del menú no llegaban.** El runtime no acepta parámetros por
+el dispatch: los lee de su **propio ini**. Por eso en AMD los sliders no
+hacían nada. `DlssNrEngine::SetEffect()` escribe ese ini antes de que el
+runtime cargue y en cada cambio (RNSZ):
+
+| Menú | ini del runtime |
+| --- | --- |
+| Intensity | `Scale` = intensity × 0.03 (`NS_AMD_NR_SCALE_MAX` mueve el tope) |
+| Local tone | `LocalTone` |
+| Local structure | `LocalStructure` |
+| Skin structure | `SkinStructure` |
+| Auto mask | `UseAutoMask` |
+
+## Qué esperar del efecto
+
+Lo que hace esta red es **iluminación y detalle de escena**: piel, pelo,
+tejido, sombras de contacto. Sobre contenido fotográfico o de juego se nota;
+sobre una UI plana no tiene casi nada que añadir — medido: 0,56/255 sobre una
+captura de menú frente a 6,1/255 sobre una foto, con el mismo ajuste. No es un
+fallo, es el dominio para el que se entrenó.
+
+El salto de resolución lo hace FSR (los dos dispatch de arriba), no un
+bilineal, así que bajar el slider cuesta detalle de forma suave en vez de
+emborronar. A escala 1.0 no se reescala nada.
+
+Y el ajuste que importa es `Scale` (el slider Intensity): 0,03 es donde el
+detalle aparece sin artefactos; a 0,06 ya se nota forzado y a 0,125 (tope del
+runtime) hay halos, piel naranja y fringing.
 
 ## Clics: no es un bug
 
