@@ -27,22 +27,42 @@ namespace {
 const wchar_t* kProxyName = L"version.dll";
 const wchar_t* kUpscalerName = L"amd_fidelityfx_upscaler_dx12.dll";
 
-// One shader for both ends of the pass: resample src into dst, optionally
-// writing the channels back to front. Going in it downscales the captured
-// frame to the network's resolution; coming out it is a 1:1 copy that turns
-// the upscaler's RGBA into the BGRA the protocol speaks, which keeps a
-// per-pixel swizzle off the CPU (it cost ~10 ms a frame at 1440p).
+// One shader for both ends of the pass. Besides resampling it converts the
+// colour space, and that is not a detail: the network is fed linear light,
+// like the game feeds it (its own log says `colour dxgi 10 ... tonemap 1`
+// there against `dxgi 28 ... tonemap 0` for an 8-bit sRGB input). Handing it
+// sRGB bytes as if they were linear made it apply a tone curve that crushed
+// the highlights - measured, -48/255 at the top end - while its actual
+// spatial contribution was 0.67/255. That reads as "the neural pass does
+// nothing except make it look worse", which is exactly what it was.
+//
+// mode 0: sRGB in -> linear out (the network's input)
+// mode 1: linear in -> sRGB out, channels reversed (the protocol's BGRA)
 const char kResampleHLSL[] = R"(
 Texture2D<float4> src : register(t0);
 RWTexture2D<float4> dst : register(u0);
 SamplerState smp : register(s0);
-cbuffer C : register(b0) { uint dstW; uint dstH; uint swizzle; uint pad; };
+cbuffer C : register(b0) { uint dstW; uint dstH; uint mode; uint pad; };
+
+float3 SrgbToLinear(float3 c) {
+    return c <= 0.04045 ? c / 12.92 : pow(abs(c + 0.055) / 1.055, 2.4);
+}
+float3 LinearToSrgb(float3 c) {
+    c = max(c, 0.0);
+    return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
     if (id.x >= dstW || id.y >= dstH) return;
     float2 uv = (float2(id.xy) + 0.5) / float2(dstW, dstH);
     float4 c = src.SampleLevel(smp, uv, 0);
-    dst[id.xy] = swizzle ? float4(c.b, c.g, c.r, c.a) : c;
+    if (mode == 0) {
+        dst[id.xy] = float4(SrgbToLinear(c.rgb), c.a);
+    } else {
+        float3 s = saturate(LinearToSrgb(c.rgb));
+        dst[id.xy] = float4(s.b, s.g, s.r, c.a);
+    }
 }
 )";
 
@@ -359,7 +379,8 @@ bool DlssNrEngine::Impl::CreateFrameObjects(uint32_t work_w, uint32_t work_h,
     // Frames arrive and leave at out res; the network sees work res.
     src = Tex(device, out_w, out_h, DXGI_FORMAT_B8G8R8A8_UNORM,
               D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
-    color = Tex(device, work_w, work_h, DXGI_FORMAT_R8G8B8A8_UNORM,
+    // Linear fp16, the format the network is built around.
+    color = Tex(device, work_w, work_h, DXGI_FORMAT_R16G16B16A16_FLOAT,
                 D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     depth = Tex(device, work_w, work_h, DXGI_FORMAT_R32_FLOAT,
@@ -379,7 +400,7 @@ bool DlssNrEngine::Impl::CreateFrameObjects(uint32_t work_w, uint32_t work_h,
     // It also has to carry a typed UAV store for the runtime's residual
     // apply, which B8G8R8A8 does not guarantee - hence RGBA8 here and one
     // GPU pass to put the channels back in protocol order.
-    out = Tex(device, work_w, work_h, DXGI_FORMAT_R8G8B8A8_UNORM,
+    out = Tex(device, work_w, work_h, DXGI_FORMAT_R16G16B16A16_FLOAT,
               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
               D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     bgra = Tex(device, out_w, out_h, DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -412,12 +433,13 @@ bool DlssNrEngine::Impl::CreateFrameObjects(uint32_t work_w, uint32_t work_h,
     srv.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     device->CreateShaderResourceView(src, &srv, h);
     h.ptr += heap_step;
-    uav.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    uav.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     device->CreateUnorderedAccessView(color, nullptr, &uav, h);
     h.ptr += heap_step;
-    srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srv.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     device->CreateShaderResourceView(out, &srv, h);
     h.ptr += heap_step;
+    uav.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     device->CreateUnorderedAccessView(bgra, nullptr, &uav, h);
 
     ffxCreateBackendDX12Desc backend{};
@@ -426,7 +448,10 @@ bool DlssNrEngine::Impl::CreateFrameObjects(uint32_t work_w, uint32_t work_h,
     ffxCreateContextDescUpscale desc{};
     desc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
     desc.header.pNext = &backend.header;
-    desc.flags = FFX_UPSCALE_ENABLE_AUTO_EXPOSURE;
+    // The colour we hand over is linear light now, so say so: the flag
+    // changes how the upscaler and the hooked network read it.
+    desc.flags = FFX_UPSCALE_ENABLE_AUTO_EXPOSURE |
+                 FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE;
     desc.maxRenderSize = { work_w, work_h };
     desc.maxUpscaleSize = { work_w, work_h };
     ffxReturnCode_t rc = create(&ffx, &desc.header, nullptr);
@@ -467,11 +492,86 @@ void DlssNrEngine::Impl::WaitGpu(DWORD ms) {
     }
 }
 
+void DlssNrEngine::SetEffect(const EffectParams& p) {
+    if (p == effect_ && !ini_path_.empty()) return;
+    effect_ = p;
+    WriteIni();
+}
+
+void DlssNrEngine::WriteIni() const {
+    if (ini_path_.empty()) return;
+    // Everything the runtime reads, in one write: the keys it does not find
+    // fall back to ITS defaults, and one of those defaults (Scale=0.03125)
+    // is what made the whole pass invisible. UseFsrInputs=1 is not optional
+    // either - with 0 the upscaler hook is never armed and no frame is ever
+    // processed, silently.
+    char env[32];
+    float scale_max = 0.25f;
+    if (GetEnvironmentVariableA("NS_AMD_NR_SCALE_MAX", env, sizeof(env))) {
+        float v = (float)atof(env);
+        if (v > 0.0f && v <= 4.0f) scale_max = v;
+    }
+    const float intensity = effect_.intensity < 0.0f ? 0.0f
+                          : (effect_.intensity > 1.0f ? 1.0f : effect_.intensity);
+    FILE* f = nullptr;
+    if (fopen_s(&f, ini_path_.c_str(), "wb") != 0 || !f) {
+        Say("cannot write %s - the effect controls will not reach the runtime",
+            ini_path_.c_str());
+        return;
+    }
+    fprintf(f,
+            "[DlssNrOnAmd]\n"
+            "Enabled=1\n"
+            "UseFsrInputs=1\n"
+            "UseDepth=0\n"
+            "Interop=1\n"
+            "Inline=1\n"
+            "InlineWaitMs=200\n"
+            "Temporal=1\n"
+            "Tonemap=-1\n"
+            "HipDevice=-1\n"
+            "Scale=%.5f\n"
+            "LocalTone=%.3f\n"
+            "LocalStructure=%.3f\n"
+            "SkinStructure=%.3f\n"
+            "UseAutoMask=%u\n"
+            "ToneChannels=%u\n",
+            intensity * scale_max, effect_.local_tone, effect_.local_structure,
+            effect_.skin_structure, effect_.auto_mask, effect_.tone_channels);
+    fclose(f);
+}
+
 DlssNrEngine::~DlssNrEngine() { Stop(); }
 
 bool DlssNrEngine::Prepare(uint32_t out_w, uint32_t out_h, std::string& why) {
     if (!out_w || !out_h) { why = "zero frame size"; return false; }
     if (!impl_) impl_ = new Impl();
+
+    // Find where the runtime lives before anything else: its ini has to be
+    // written before it loads, and the menu's values go into that ini.
+    if (impl_->home.empty()) {
+        const std::wstring dir = ExeDir();
+        std::wstring candidates[3];
+        int n = 0;
+        wchar_t env[MAX_PATH];
+        if (GetEnvironmentVariableW(L"NS_AMD_NR_RUNTIME", env, MAX_PATH)) {
+            std::wstring p = env;
+            if (!p.empty() && p.back() != L'\\') p += L'\\';
+            candidates[n++] = p;
+        }
+        candidates[n++] = dir;
+        candidates[n++] = dir + L"..\\weights\\";
+        for (int i = 0; i < n; ++i) {
+            if (GetFileAttributesW((candidates[i] + kProxyName).c_str())
+                != INVALID_FILE_ATTRIBUTES) {
+                impl_->home = candidates[i];
+                break;
+            }
+        }
+        if (impl_->home.empty()) impl_->home = dir + L"..\\weights\\";
+        ini_path_ = ToUtf8(impl_->home + L"dlssnr_on_amd.ini");
+    }
+
     if (impl_->hwnd) return true;
 
     WNDCLASSW wc{};
@@ -512,7 +612,12 @@ bool DlssNrEngine::Start(uint32_t work_w, uint32_t work_h,
     }
     candidates[n_candidates++] = dir;
     candidates[n_candidates++] = dir + L"..\\weights\\";
-    for (int i = 0; i < n_candidates && !impl_->proxy; ++i) {
+    // NS_AMD_NR_FSR_ONLY=1 builds the same pipeline without the neural
+    // runtime in it. It exists to answer "is this the network or the
+    // upscaler?" about anything we see in the picture, which is not a
+    // question you can answer by staring at one image.
+    const bool fsr_only = EnvUint("NS_AMD_NR_FSR_ONLY", 0) != 0;
+    for (int i = 0; i < n_candidates && !impl_->proxy && !fsr_only; ++i) {
         const std::wstring path = candidates[i] + kProxyName;
         if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
         home = candidates[i];
@@ -520,9 +625,13 @@ bool DlssNrEngine::Start(uint32_t work_w, uint32_t work_h,
         log_from = FileSize(ToUtf8(home + L"dlssnr_on_amd.log"));
         impl_->proxy = LoadLibraryW(path.c_str());
     }
-    if (!impl_->proxy) {
+    if (!impl_->proxy && !fsr_only) {
         why = "no DLSS-NR runtime (version.dll) beside the worker or in amd_mode/weights";
         return false;
+    }
+    if (fsr_only) {
+        home = dir + L"..\\weights\\";
+        Say("NS_AMD_NR_FSR_ONLY=1: upscaler only, no neural runtime");
     }
     impl_->upscaler = LoadLibraryW((home + kUpscalerName).c_str());
     if (!impl_->upscaler) impl_->upscaler = LoadLibraryW((dir + kUpscalerName).c_str());
@@ -552,14 +661,16 @@ bool DlssNrEngine::Start(uint32_t work_w, uint32_t work_h,
     const std::string log_path = ToUtf8(home + L"dlssnr_on_amd.log");
     const char* kLastHook = "hooked IDXGISwapChain1::Present1";
     DWORD waited = 0;
-    bool hooked = false;
-    while (waited < cap) {
+    bool hooked = fsr_only;  // nothing to wait for without the runtime
+    while (waited < cap && !fsr_only) {
         if (LogHas(log_path, log_from, kLastHook)) { hooked = true; break; }
         Sleep(25);
         waited += 25;
     }
-    if (hooked) {
+    if (hooked && !fsr_only) {
         Say("runtime hooks in after %u ms", waited);
+    } else if (fsr_only) {
+        // nothing to report
     } else {
         Say("runtime hooks not seen in %u ms; going on anyway, watch %s",
             waited, log_path.c_str());

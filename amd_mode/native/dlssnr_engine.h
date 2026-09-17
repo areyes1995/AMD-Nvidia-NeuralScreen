@@ -41,6 +41,32 @@ struct FrameParams {
     float frame_time_ms = 16.6f;
 };
 
+// The menu's effect controls. The hosted runtime does not take parameters
+// through the dispatch: it reads its own ini. So this is the bridge, and
+// without it the sliders move and nothing happens - which is exactly what
+// they did on AMD.
+//
+// `intensity` drives the runtime's `Scale`, which is the strength of the
+// network's contribution. Its shipped default was 0.03125: at 3% the pass is
+// measurable (0.56/255) and invisible. NS_AMD_NR_SCALE_MAX sets what
+// intensity 1.0 means, because the useful range depends on the content.
+struct EffectParams {
+    float intensity = 1.0f;
+    float local_tone = 0.0f;
+    float local_structure = 1.0f;
+    float skin_structure = -1.0f;
+    uint32_t auto_mask = 1;
+    uint32_t tone_channels = 0;
+
+    bool operator==(const EffectParams& o) const {
+        return intensity == o.intensity && local_tone == o.local_tone &&
+               local_structure == o.local_structure &&
+               skin_structure == o.skin_structure && auto_mask == o.auto_mask &&
+               tone_channels == o.tone_channels;
+    }
+    bool operator!=(const EffectParams& o) const { return !(*this == o); }
+};
+
 class DlssNrEngine {
 public:
     DlssNrEngine() = default;
@@ -75,6 +101,11 @@ public:
     bool Resize(uint32_t work_w, uint32_t work_h, uint32_t out_w, uint32_t out_h,
                 std::string& why);
 
+    // Writes the runtime's ini from the menu's values. Call it before Start()
+    // and whenever the parameters change; the runtime picks the file up while
+    // it runs. A no-op when nothing moved.
+    void SetEffect(const EffectParams& p);
+
     // Quiesces the GPU and stops using the runtime. It deliberately does not
     // tear the D3D12 objects down: a third party's detours and worker threads
     // are still live in this process, and releasing objects they hold is a
@@ -87,11 +118,15 @@ public:
     uint32_t out_height() const { return out_h_; }
 
 private:
+    void WriteIni() const;
+
     struct Impl;
     Impl* impl_ = nullptr;
     bool ready_ = false;
     uint32_t work_w_ = 0, work_h_ = 0;
     uint32_t out_w_ = 0, out_h_ = 0;
+    EffectParams effect_{};
+    std::string ini_path_;
 };
 
 }  // namespace nsamd
