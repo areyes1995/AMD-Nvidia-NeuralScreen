@@ -109,16 +109,62 @@ desensamblando el runtime y se pagan con silencio si se incumplen:
   store*, que es lo que el runtime necesita para aplicar el residual, así que
   el swizzle se hace una sola vez, a la vuelta.
 
+## La quinta trampa: dónde coge el color
+
+El runtime toma su color de la **salida** del dispatch del upscaler, no de la
+entrada. Consecuencia práctica, medida: con la salida de FSR a 2560×1440 la red
+costaba **45–49 ms por frame pasara lo que pasara** con el `renderSize`, y el
+slider de escala no hacía absolutamente nada.
+
+Por eso el motor deja la salida de FSR a **resolución de trabajo** y es nuestro
+propio pase de compute el que sube a la resolución final. Con eso la red cuesta
+lo que el slider dice:
+
+| Escala | Red | Red @ salida 1440p (antes) |
+| --- | --- | --- |
+| 0,65 → 1664×936 | 20 ms | 45 ms |
+| 0,50 → 1280×720 | 14 ms | 46 ms |
+| 0,35 → 896×504 | 9 ms | 47 ms |
+
 ## Medido aquí
 
-| Qué | Cifra |
-| --- | --- |
-| Red a 320×180 | 6 ms/job (`network job N done in 6 ms`) |
-| Red a 720p | 12 ms/job, 36 ms el primero (carga de kernels) |
-| Hooks del runtime | ~450 ms desde la carga |
-| Motor listo | ~3,4 s (passthrough mientras tanto) |
-| Round-trip A/B 320×180 | 107–123 FPS con red (515–558 en passthrough) |
-| Un juego real, 720p | 15–16 ms/job (log de RE Requiem, 167 KB) |
+En la app completa, monitor 2560×1440, escala 0,50 (red a 1280×720):
+
+| Qué | Antes | Ahora |
+| --- | --- | --- |
+| FPS | 7,6 | **17,2** |
+| `send` (Python → worker) | 14,2 ms | 2,2 ms (SHMI) |
+| `recv` (worker → Python) | 92–131 ms | 30,4 ms (OUTS + red a work res) |
+| Red sola | 45–49 ms | 14 ms |
+
+Y en el worker aislado: red 6 ms a 320×180, 36 ms el primer job (carga de
+kernels); hooks del runtime ~450 ms; motor listo ~3,4 s (passthrough mientras
+tanto). Referencia de campo: 15–16 ms/job a 720p en un juego real (log de RE
+Requiem, 167 KB).
+
+## Los canales de memoria compartida
+
+El pipe costaba más que la red: 14,7 MB por frame en cada sentido a 1440p. El
+worker AMD ahora acepta los dos canales que Python ya ofrecía y antes rechazaba
+(`SACK`/`OAK2` con ok=0), con el mismo layout que el worker NVIDIA:
+
+- **SHMI** (entrada): color + motion en una sección; el frame no viaja por el
+  pipe. `send` 14,2 → 2,2 ms.
+- **OUTS** (salida): los píxeles vuelven por otra sección con seqlock; `OUT1`
+  lleva el centinela `0xFFFFFFFF`. El motor **escribe directamente** en la
+  sección, sin copias intermedias.
+
+`GRAY` sigue rechazado a propósito: es el canal de luminancia del modo DDA y
+este worker no captura la pantalla por su cuenta.
+
+## Clics: no es un bug
+
+Con el menú abierto la ventana se queda los clics a propósito (igual que
+ReShade); el menú se abre solo al arrancar (`open_menu_on_start`). Cerrándolo
+con Num2 el overlay vuelve a ser click-through y los clics caen en lo que haya
+debajo — verificado con `WindowFromPoint` sobre el centro de la pantalla:
+devuelve otra ventana, y el estilo del overlay lleva `TRANSPARENT|LAYERED|
+NOACTIVATE`.
 
 `docs/ab_baseline_amd_hip.json` es la baseline con red; `ab_baseline_amd.json`
 sigue siendo la de passthrough. `tools/ab_compare.py --wait-neural 25` espera a

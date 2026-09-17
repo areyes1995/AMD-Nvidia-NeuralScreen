@@ -14,6 +14,14 @@
 //   * it only arms the upscaler hook when `UseFsrInputs=1` in its own ini;
 //   * it needs its weights file next to the DLL.
 //
+// Sizes matter as much as any of that. The pipeline hands us a full-resolution
+// frame and expects one back, while `work` is the resolution the network is
+// meant to run at - that is the whole point of the scale slider. So the pass
+// is: full-res frame in -> GPU downscale to work res -> network -> upscaled to
+// full res by FSR -> full-res frame out. Running the network at output
+// resolution (which is what the first version did) costs multiples of the
+// frame time and makes the slider do nothing.
+//
 // Nothing here is required for the worker to run: with no runtime on disk
 // Start() fails with a reason and the worker stays on passthrough.
 #pragma once
@@ -45,31 +53,45 @@ public:
     // a thread that pumps messages, and DXGI blocks inside Present when it is
     // not. Start() takes seconds, so it is meant to run on a worker thread -
     // which is exactly the thread that must not own this window.
-    bool Prepare(uint32_t w, uint32_t h, std::string& why);
+    bool Prepare(uint32_t out_w, uint32_t out_h, std::string& why);
 
-    // Brings the runtime up for `w`x`h` BGRA frames; call Prepare() first.
-    // False means "no neural pass": `why` says what was missing, and the
-    // caller keeps passthrough.
-    bool Start(uint32_t w, uint32_t h, std::string& why);
+    // Brings the runtime up: frames arrive and leave at out_w x out_h, the
+    // network runs at work_w x work_h. Call Prepare() first. False means "no
+    // neural pass": `why` says what was missing, and the caller keeps
+    // passthrough.
+    bool Start(uint32_t work_w, uint32_t work_h, uint32_t out_w, uint32_t out_h,
+               std::string& why);
     bool Ready() const { return ready_; }
 
-    // Same frame size contract as the worker's OUT1: `bgra` is w*h*4 in, and
-    // `out` comes back the same size. False means this frame failed; the
-    // caller answers ok=0 rather than pretending.
-    bool Dispatch(const uint8_t* bgra, size_t bytes, const FrameParams& p,
-                  std::vector<uint8_t>& out);
+    // Same frame contract as the worker's OUT1: `bgra_in` is out_w*out_h*4,
+    // and the result is written to `bgra_out`, which must hold as many bytes.
+    // Both are raw pointers so the caller can hand us the shared-memory slots
+    // directly - at 1440p a spare copy of a frame is several milliseconds.
+    // False means this frame failed; the caller answers ok=0 rather than
+    // pretending.
+    bool Dispatch(const uint8_t* bgra_in, uint8_t* bgra_out, size_t bytes,
+                  const FrameParams& p);
 
-    bool Resize(uint32_t w, uint32_t h, std::string& why);
+    bool Resize(uint32_t work_w, uint32_t work_h, uint32_t out_w, uint32_t out_h,
+                std::string& why);
+
+    // Quiesces the GPU and stops using the runtime. It deliberately does not
+    // tear the D3D12 objects down: a third party's detours and worker threads
+    // are still live in this process, and releasing objects they hold is a
+    // crash we cannot fix from out here. The process is about to exit anyway.
     void Stop();
 
-    uint32_t width() const { return width_; }
-    uint32_t height() const { return height_; }
+    uint32_t work_width() const { return work_w_; }
+    uint32_t work_height() const { return work_h_; }
+    uint32_t out_width() const { return out_w_; }
+    uint32_t out_height() const { return out_h_; }
 
 private:
     struct Impl;
     Impl* impl_ = nullptr;
     bool ready_ = false;
-    uint32_t width_ = 0, height_ = 0;
+    uint32_t work_w_ = 0, work_h_ = 0;
+    uint32_t out_w_ = 0, out_h_ = 0;
 };
 
 }  // namespace nsamd

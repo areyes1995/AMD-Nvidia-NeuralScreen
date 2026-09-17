@@ -182,6 +182,102 @@ struct Dispatch {
     uint32_t auto_mask = 0, style = 0, ui_correction = 0;
 };
 
+constexpr uint32_t kOutBytesInShm = 0xFFFFFFFFu;  // OUT1.bytes sentinel
+constexpr uint32_t kFlagShm = 0x1;                // FRM1: colour is in SHMI
+
+// --- Shared memory, both directions ----------------------------------------
+// The pipe costs more than the network does: a 2560x1440 frame is 14.7 MB
+// each way, and that was ~45 ms of an 81 ms frame. Python already offers both
+// channels and the worker used to refuse them (SACK/OAK2 with ok=0); these
+// mirror the NVIDIA worker's layout exactly, so the client side needs nothing.
+struct SharedIn {
+    HANDLE file = nullptr;
+    const uint8_t* base = nullptr;
+    size_t bytes = 0;
+    size_t motion_off = 0;
+
+    void Close() {
+        if (base) { UnmapViewOfFile(base); base = nullptr; }
+        if (file) { CloseHandle(file); file = nullptr; }
+        bytes = 0; motion_off = 0;
+    }
+    bool Open(const char* name, uint32_t color_bytes, uint32_t motion_bytes) {
+        Close();
+        const size_t need = (size_t)color_bytes + (size_t)motion_bytes;
+        if (!color_bytes || !motion_bytes || need > ((size_t)1 << 31)) return false;
+        file = OpenFileMappingA(FILE_MAP_READ, FALSE, name);
+        if (!file) return false;
+        base = (const uint8_t*)MapViewOfFile(file, FILE_MAP_READ, 0, 0, need);
+        if (!base) { CloseHandle(file); file = nullptr; return false; }
+        bytes = need;
+        motion_off = color_bytes;
+        return true;
+    }
+};
+
+// [0..8) uint64 seqlock, odd while writing; [8..) the RGBA8 frame.
+struct SharedOut {
+    HANDLE file = nullptr;
+    uint8_t* map = nullptr;
+    size_t bytes = 0;      // seqlock included
+    uint64_t seq = 0;
+
+    void Close() {
+        if (map) { UnmapViewOfFile(map); map = nullptr; }
+        if (file) { CloseHandle(file); file = nullptr; }
+        bytes = 0;
+    }
+    bool Open(const char* name, uint32_t w, uint32_t h) {
+        Close();
+        if (!w || !h) return true;  // "off" is not a failure
+        const size_t need = (size_t)w * h * 4 + 8;
+        file = OpenFileMappingA(FILE_MAP_WRITE, FALSE, name);
+        if (!file) return false;
+        map = (uint8_t*)MapViewOfFile(file, FILE_MAP_WRITE, 0, 0, 0);
+        if (!map) { CloseHandle(file); file = nullptr; return false; }
+        // A section is not a file: its size cannot be asked for directly, so
+        // measure the mapped region instead (same reasoning as the NVIDIA
+        // worker, and the same bug if you skip it).
+        MEMORY_BASIC_INFORMATION mbi{};
+        const size_t have = (VirtualQuery(map, &mbi, sizeof(mbi)) == sizeof(mbi))
+                                ? (size_t)mbi.RegionSize : 0u;
+        if (have < need) { Close(); return false; }
+        bytes = need;
+        return true;
+    }
+    // The slot to write `n` bytes of frame into, or null when this channel
+    // cannot take it. Only an exact fit: a short frame would leave stale bytes
+    // in the tail and the client copies the whole slot.
+    uint8_t* Slot(size_t n) {
+        return (map && n && n + 8 == bytes) ? map + 8 : nullptr;
+    }
+    // The seqlock around a write straight into the slot: odd while writing,
+    // even when done, so the client can tell a torn frame.
+    void BeginWrite() {
+        if (!map) return;
+        uint64_t s = ++seq;
+        if ((s & 1) == 0) ++s;
+        seq = s;
+        memcpy(map, &s, sizeof(s));
+    }
+    void EndWrite() {
+        if (!map) return;
+        uint64_t s = ++seq;
+        seq = s;
+        memcpy(map, &s, sizeof(s));
+    }
+    // The copying form, for frames the engine did not write itself
+    // (passthrough, and any job it refused).
+    bool Write(const uint8_t* pixels, size_t n) {
+        uint8_t* slot = Slot(n);
+        if (!slot) return false;
+        BeginWrite();
+        memcpy(slot, pixels, n);
+        EndWrite();
+        return true;
+    }
+};
+
 // The fallback dispatch: byte-identical output. Used until the HIP engine is
 // up (it comes up on its own thread), for every frame it refuses, and on any
 // machine without the runtime.
@@ -193,7 +289,21 @@ bool DispatchPassthrough(const uint8_t* color, size_t bytes,
 }
 }  // namespace
 
+static int RunWorker(int argc, char** argv);
+
 int main(int argc, char** argv) {
+    int rc = RunWorker(argc, argv);
+    fflush(nullptr);
+    // Leave without running the teardown. When the HIP runtime is hosted, the
+    // process carries a third party's detours, its worker thread and its DLL
+    // unload path; that teardown fails fast (0xC0000409) and the parent logs a
+    // crash for a session that ended normally. There is nothing left to do
+    // here that the OS will not do better.
+    TerminateProcess(GetCurrentProcess(), (UINT)rc);
+    return rc;
+}
+
+static int RunWorker(int argc, char** argv) {
     bool live = argc > 1 && strcmp(argv[1], "--live") == 0;
     if (!live) {
         fprintf(stderr, "amd_nr_host: full-input worker, use --live\n");
@@ -246,8 +356,14 @@ int main(int argc, char** argv) {
             fprintf(stderr, "[host] amd full: NS_AMD_NR=0, passthrough by request\n");
             return;
         }
+        // Frames arrive and leave at the output resolution; the network runs
+        // at the work resolution, which is what the scale slider sets. Doing
+        // it the other way round (the first version ran the network at output
+        // resolution) costs multiples of the frame time and makes the slider
+        // do nothing at all.
         uint32_t ow = full_w ? full_w : work_w;
         uint32_t oh = full_h ? full_h : work_h;
+        uint32_t nw = work_w, nh = work_h;
         // The host window is created here, on the thread that serves frames
         // and therefore pumps its messages; everything slow happens on the
         // thread below. See DlssNrEngine::Prepare.
@@ -257,11 +373,11 @@ int main(int argc, char** argv) {
                     why.c_str());
             return;
         }
-        engine_thread = std::thread([&engine, &engine_live, ow, oh] {
+        engine_thread = std::thread([&engine, &engine_live, nw, nh, ow, oh] {
             std::string why;
-            if (engine.Start(ow, oh, why)) {
-                fprintf(stderr, "[host] amd full: neural pass ON (HIP runtime, %ux%u)\n",
-                        ow, oh);
+            if (engine.Start(nw, nh, ow, oh, why)) {
+                fprintf(stderr, "[host] amd full: neural pass ON (HIP runtime, "
+                        "network %ux%u -> output %ux%u)\n", nw, nh, ow, oh);
                 engine_live.store(true, std::memory_order_release);
             } else {
                 fprintf(stderr, "[host] amd full: neural pass off (%s); passthrough\n",
@@ -277,8 +393,18 @@ int main(int argc, char** argv) {
         ~Joiner() { if (t.joinable()) t.join(); }
     } joiner{engine_thread};
 
+    SharedIn shm_in;
+    SharedOut shm_out;
+
     float exposure = 1.0f;
     uint64_t frames = 0, resets = 0, neural = 0;
+    // Where the worker's own time goes, so "the AMD path is slow" can be
+    // answered with the split instead of a guess: dispatch is upload + the
+    // network + readback, the rest of the frame time is the pipe.
+    LARGE_INTEGER qpf{};
+    QueryPerformanceFrequency(&qpf);
+    long long dispatch_ticks = 0;
+    uint64_t dispatch_count = 0;
     std::vector<uint8_t> frame, mv, out;
     for (;;) {
         uint32_t magic = 0;
@@ -290,16 +416,30 @@ int main(int argc, char** argv) {
             size_t color = (size_t)(full_w ? full_w : work_w) * (full_h ? full_h : work_h) * 4;
             size_t motion = (size_t)mot_w * mot_h * 4;  // fp16 2ch
             bool no_color = (magic == kPrep) || (fr.flags & kFlagNoColor);
-            bool in_shm = (fr.flags & 0x1) != 0;  // never set: SACK refused
+            bool in_shm = (fr.flags & kFlagShm) != 0;
             if (frame.size() != out_size()) frame.assign(out_size(), 0);
-            if (!no_color && !in_shm) {
+            if (mv.size() != motion) mv.resize(motion);
+            if (in_shm) {
+                // Colour and motion are already in the section; nothing comes
+                // down the pipe for this frame. One memcpy instead of 14.7 MB
+                // of pipe at 1440p.
+                if (!shm_in.base || shm_in.motion_off < color ||
+                    shm_in.bytes < shm_in.motion_off + motion) {
+                    fprintf(stderr, "[host] amd full: SHM frame but the section is "
+                            "too small (%zu bytes, need %zu+%zu)\n",
+                            shm_in.bytes, color, motion);
+                    Out o{kOut, fr.index, 0, 0, 0, fr.pts};
+                    WriteAll(&o, sizeof(o));
+                    continue;
+                }
+                memcpy(frame.data(), shm_in.base, color);
+                if (motion) memcpy(mv.data(), shm_in.base + shm_in.motion_off, motion);
+            } else if (!no_color) {
                 if (!ReadExact(frame.data(), color)) return 0;
-                if (mv.size() != motion) mv.resize(motion);
                 if (motion && !ReadExact(mv.data(), motion)) return 0;
             } else {
-                if (mv.size() != motion) mv.resize(motion);
-                if (motion && !in_shm && !ReadExact(mv.data(), motion)) return 0;
-                if (in_shm || no_color) std::fill(frame.begin(), frame.end(), 0);
+                if (motion && !ReadExact(mv.data(), motion)) return 0;
+                std::fill(frame.begin(), frame.end(), 0);
             }
 
             // --- exposure: PaperWhite over the real colour (stride sample) ---
@@ -360,15 +500,19 @@ int main(int argc, char** argv) {
 
             engine_start();
             bool ok = false;
+            bool wrote_shm = false;
+            LARGE_INTEGER t_disp0{}, t_disp1{};
+            QueryPerformanceCounter(&t_disp0);
             if (engine_live.load(std::memory_order_acquire) && engine.Ready()) {
                 // A resize can land while the engine is still coming up, so
                 // the size it started with is not necessarily the one we are
                 // serving now.
                 uint32_t ow = full_w ? full_w : work_w;
                 uint32_t oh = full_h ? full_h : work_h;
-                if (engine.width() != ow || engine.height() != oh) {
+                if (engine.out_width() != ow || engine.out_height() != oh ||
+                    engine.work_width() != work_w || engine.work_height() != work_h) {
                     std::string why;
-                    if (!engine.Resize(ow, oh, why)) {
+                    if (!engine.Resize(work_w, work_h, ow, oh, why)) {
                         fprintf(stderr, "[host] amd full: neural pass lost on resize"
                                 " (%s); passthrough\n", why.c_str());
                         engine_live.store(false, std::memory_order_release);
@@ -380,7 +524,20 @@ int main(int argc, char** argv) {
                 fp.index = fr.index;
                 fp.reset = fr.reset;
                 fp.exposure = exposure;
-                ok = engine.Dispatch(frame.data(), out_size(), fp, out);
+                // Straight from the input section into the output one when
+                // both are open: at 1440p each spare copy of a frame is
+                // several milliseconds of the frame budget.
+                const uint8_t* in_ptr = in_shm ? shm_in.base : frame.data();
+                if (out.size() != out_size()) out.assign(out_size(), 0);
+                uint8_t* out_ptr = shm_out.Slot(out_size());
+                if (out_ptr) {
+                    shm_out.BeginWrite();
+                    ok = engine.Dispatch(in_ptr, out_ptr, out_size(), fp);
+                    shm_out.EndWrite();
+                    wrote_shm = ok;
+                } else {
+                    ok = engine.Dispatch(in_ptr, out.data(), out_size(), fp);
+                }
                 if (ok) {
                     ++neural;
                 } else if (frames == 0 || (frames % 120) == 0) {
@@ -390,10 +547,20 @@ int main(int argc, char** argv) {
                             fr.index);
                 }
             }
-            if (!ok && !DispatchPassthrough(frame.data(), out_size(), d, out)) {
+            if (!ok && in_shm) {
+                // Passthrough still owes the client the pixels, and with the
+                // colour in the section `frame` was never filled.
+                if (out.size() != out_size()) out.assign(out_size(), 0);
+                memcpy(out.data(), shm_in.base, out_size());
+            } else if (!ok && !DispatchPassthrough(frame.data(), out_size(), d, out)) {
                 Out o{kOut, fr.index, 0, 0, 0, fr.pts};
                 WriteAll(&o, sizeof(o));
                 continue;
+            }
+            QueryPerformanceCounter(&t_disp1);
+            if (ok) {
+                dispatch_ticks += t_disp1.QuadPart - t_disp0.QuadPart;
+                ++dispatch_count;
             }
             ++frames;
             // The first neural frame gets its own line: the engine comes up
@@ -403,20 +570,36 @@ int main(int argc, char** argv) {
                 fprintf(stderr,
                         "[nr] f=%llu exp=%.3f mv=%.3f resets=%llu "
                         "int=%.2f tone=%.2f struct=%.2f skin=%.2f mask=%u style=%u uic=%u "
-                        "neural=%llu\n",
+                        "neural=%llu dispatch=%.1fms\n",
                         (unsigned long long)frames, d.exposure, d.mv_mean,
                         (unsigned long long)resets, d.intensity, d.local_tone,
                         d.local_structure, d.skin_structure, d.auto_mask,
-                        d.style, d.ui_correction, (unsigned long long)neural);
+                        d.style, d.ui_correction, (unsigned long long)neural,
+                        dispatch_count ? (double)dispatch_ticks * 1000.0 /
+                                         ((double)qpf.QuadPart * (double)dispatch_count) : 0.0);
             }
-            Out o{kOut, fr.index, 1, (uint32_t)out.size(), 1, fr.pts};
-            WriteAll(&o, sizeof(o));
-            if (!out.empty()) WriteAll(out.data(), out.size());
+            // The pixels go through the section when it is open and the frame
+            // fits it exactly; the sentinel tells the client to read there.
+            // `wrote_shm` means the engine already wrote them in place.
+            if (wrote_shm || shm_out.Write(out.data(), out.size())) {
+                Out o{kOut, fr.index, 1, kOutBytesInShm, 1, fr.pts};
+                WriteAll(&o, sizeof(o));
+            } else {
+                Out o{kOut, fr.index, 1, (uint32_t)out.size(), 1, fr.pts};
+                WriteAll(&o, sizeof(o));
+                if (!out.empty()) WriteAll(out.data(), out.size());
+            }
         } else if (magic == kShm) {
             Shm m{};
             m.magic = magic;
             if (!ReadExact(((uint8_t*)&m) + 4, sizeof(m) - 4)) return 0;
-            SendAck(kSack, 0, m.pts);  // refuse: Python falls back to the pipe
+            m.name[sizeof(m.name) - 1] = '\0';
+            uint32_t ok = shm_in.Open(m.name, m.color_bytes, m.motion_bytes) ? 1 : 0;
+            fprintf(stderr, "[host] amd full: SHMI '%s' %s (%u + %u bytes)\n",
+                    m.name, ok ? "mapped - frames come through shared memory"
+                               : "failed - frames stay on the pipe",
+                    m.color_bytes, m.motion_bytes);
+            SendAck(kSack, ok, m.pts);
         } else if (magic == kMotion) {
             Small m{};
             m.magic = magic;
@@ -451,11 +634,23 @@ int main(int argc, char** argv) {
             m.magic = magic;
             if (!ReadExact(((uint8_t*)&m) + 4, sizeof(m) - 4)) return 0;
             SendAck(kWgak, 0, m.pts);
-        } else if (magic == kGray || magic == kOuts) {
+        } else if (magic == kOuts) {
             GrayOut m{};
             m.magic = magic;
             if (!ReadExact(((uint8_t*)&m) + 4, sizeof(m) - 4)) return 0;
-            SendAck(magic == kGray ? kGak : kOak, 0, m.pts);  // refuse
+            m.name[sizeof(m.name) - 1] = '\0';
+            uint32_t ok = shm_out.Open(m.name, m.w, m.h) ? 1 : 0;
+            fprintf(stderr, "[host] amd full: OUTS '%s' %ux%u %s\n", m.name, m.w, m.h,
+                    ok ? "mapped - pixels go back through shared memory"
+                       : "failed - pixels stay on the pipe");
+            SendAck(kOak, ok, m.pts);
+        } else if (magic == kGray) {
+            GrayOut m{};
+            m.magic = magic;
+            if (!ReadExact(((uint8_t*)&m) + 4, sizeof(m) - 4)) return 0;
+            // Still refused: GRAY is the DDA path's luminance channel and this
+            // worker does not capture the screen itself.
+            SendAck(kGak, 0, m.pts);
         } else {
             fprintf(stderr, "[host] amd full: unknown magic 0x%08X, exiting\n", magic);
             return 1;

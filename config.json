@@ -10,14 +10,14 @@
   "intensity": 1.0,
   "local_tone": 0.5,
   "local_structure": 1.0,
-  "skin_structure": -1.0,
+  "skin_structure": 0.55,
   "worker_present": true,
   "motion_on_gpu": true,
   "capture_in_worker": true,
   "menu_scale": 1.0,
   "menu_offset": [
-    198,
-    1
+    -726,
+    -4
   ],
   "open_menu_on_start": true,
   "split": 0.0,

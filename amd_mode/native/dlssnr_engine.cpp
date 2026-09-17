@@ -4,6 +4,7 @@
 
 #include <windows.h>
 #include <d3d12.h>
+#include <d3dcompiler.h>
 #include <dxgi1_6.h>
 #include <cstdio>
 #include <cstring>
@@ -18,12 +19,32 @@
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "user32.lib")
+#pragma comment(lib, "d3dcompiler.lib")
 
 namespace nsamd {
 namespace {
 
 const wchar_t* kProxyName = L"version.dll";
 const wchar_t* kUpscalerName = L"amd_fidelityfx_upscaler_dx12.dll";
+
+// One shader for both ends of the pass: resample src into dst, optionally
+// writing the channels back to front. Going in it downscales the captured
+// frame to the network's resolution; coming out it is a 1:1 copy that turns
+// the upscaler's RGBA into the BGRA the protocol speaks, which keeps a
+// per-pixel swizzle off the CPU (it cost ~10 ms a frame at 1440p).
+const char kResampleHLSL[] = R"(
+Texture2D<float4> src : register(t0);
+RWTexture2D<float4> dst : register(u0);
+SamplerState smp : register(s0);
+cbuffer C : register(b0) { uint dstW; uint dstH; uint swizzle; uint pad; };
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= dstW || id.y >= dstH) return;
+    float2 uv = (float2(id.xy) + 0.5) / float2(dstW, dstH);
+    float4 c = src.SampleLevel(smp, uv, 0);
+    dst[id.xy] = swizzle ? float4(c.b, c.g, c.r, c.a) : c;
+}
+)";
 
 template <class T> void Rel(T*& p) { if (p) { p->Release(); p = nullptr; } }
 
@@ -100,46 +121,6 @@ uint32_t EnvUint(const char* name, uint32_t fallback) {
     return (uint32_t)strtoul(buf, nullptr, 10);
 }
 
-}  // namespace
-
-struct DlssNrEngine::Impl {
-    HMODULE proxy = nullptr;
-    HMODULE upscaler = nullptr;
-    PfnFfxCreateContext create = nullptr;
-    PfnFfxDispatch dispatch = nullptr;
-    PfnFfxDestroyContext destroy = nullptr;
-
-    HWND hwnd = nullptr;
-    IDXGIFactory4* factory = nullptr;
-    ID3D12Device* device = nullptr;
-    ID3D12CommandQueue* queue = nullptr;
-    IDXGISwapChain3* swap = nullptr;
-    ID3D12CommandAllocator* alloc = nullptr;
-    ID3D12GraphicsCommandList* cl = nullptr;
-    ID3D12Fence* fence = nullptr;
-    HANDLE fence_event = nullptr;
-    UINT64 fence_value = 0;
-
-    ID3D12Resource* color = nullptr;   // BGRA8, what we were handed
-    ID3D12Resource* depth = nullptr;   // R32F, flat: a desktop frame has none
-    ID3D12Resource* mv = nullptr;      // RG16F, zeroed for the same reason
-    ID3D12Resource* out = nullptr;     // RGBA8 + UAV, what the network wrote
-    ID3D12Resource* upload = nullptr;
-    ID3D12Resource* readback = nullptr;
-    UINT upload_pitch = 0, readback_pitch = 0;
-    UINT64 upload_bytes = 0, readback_bytes = 0;
-
-    ffxContext ffx = nullptr;
-
-    bool CreateDeviceObjects(uint32_t w, uint32_t h, std::string& why);
-    bool CreateFrameObjects(uint32_t w, uint32_t h, std::string& why);
-    void DestroyFrameObjects();
-    void DestroyAll();
-    bool Present();
-};
-
-namespace {
-
 ID3D12Resource* Tex(ID3D12Device* dev, UINT w, UINT h, DXGI_FORMAT fmt,
                     D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES state) {
     D3D12_HEAP_PROPERTIES hp{};
@@ -180,7 +161,7 @@ ID3D12Resource* Buffer(ID3D12Device* dev, UINT64 bytes, D3D12_HEAP_TYPE heap,
 
 void Barrier(ID3D12GraphicsCommandList* cl, ID3D12Resource* res,
              D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) {
-    if (from == to) return;
+    if (from == to || !res) return;
     D3D12_RESOURCE_BARRIER b{};
     b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     b.Transition.pResource = res;
@@ -191,10 +172,57 @@ void Barrier(ID3D12GraphicsCommandList* cl, ID3D12Resource* res,
 }
 
 UINT Align(UINT v, UINT a) { return (v + a - 1) & ~(a - 1); }
+UINT Groups(UINT n) { return (n + 7) / 8; }
 
 }  // namespace
 
-bool DlssNrEngine::Impl::CreateDeviceObjects(uint32_t w, uint32_t h, std::string& why) {
+struct DlssNrEngine::Impl {
+    HMODULE proxy = nullptr;
+    HMODULE upscaler = nullptr;
+    PfnFfxCreateContext create = nullptr;
+    PfnFfxDispatch dispatch = nullptr;
+    PfnFfxDestroyContext destroy = nullptr;
+
+    HWND hwnd = nullptr;
+    IDXGIFactory4* factory = nullptr;
+    ID3D12Device* device = nullptr;
+    ID3D12CommandQueue* queue = nullptr;
+    IDXGISwapChain3* swap = nullptr;
+    ID3D12CommandAllocator* alloc = nullptr;
+    ID3D12GraphicsCommandList* cl = nullptr;
+    ID3D12Fence* fence = nullptr;
+    HANDLE fence_event = nullptr;
+    UINT64 fence_value = 0;
+
+    ID3D12RootSignature* root = nullptr;
+    ID3D12PipelineState* pso = nullptr;
+    ID3D12DescriptorHeap* heap = nullptr;   // 4 descriptors: 2 per pass
+    UINT heap_step = 0;
+
+    ID3D12Resource* src = nullptr;    // BGRA8, the captured frame as it arrived
+    ID3D12Resource* color = nullptr;  // RGBA8 at work res: the network's input
+    ID3D12Resource* depth = nullptr;  // R32F, flat: a desktop frame has none
+    ID3D12Resource* mv = nullptr;     // RG16F, zeroed for the same reason
+    ID3D12Resource* out = nullptr;    // RGBA8 at out res, what the network wrote
+    ID3D12Resource* bgra = nullptr;   // RGBA8 holding BGRA bytes, for readback
+    ID3D12Resource* upload = nullptr;
+    ID3D12Resource* readback = nullptr;
+    UINT upload_pitch = 0, readback_pitch = 0;
+    UINT64 upload_bytes = 0, readback_bytes = 0;
+
+    ffxContext ffx = nullptr;
+
+    bool CreateDeviceObjects(uint32_t out_w, uint32_t out_h, std::string& why);
+    bool CreatePipeline(std::string& why);
+    bool CreateFrameObjects(uint32_t work_w, uint32_t work_h,
+                            uint32_t out_w, uint32_t out_h, std::string& why);
+    void DestroyFrameObjects();
+    bool Present();
+    void WaitGpu(DWORD ms);
+};
+
+bool DlssNrEngine::Impl::CreateDeviceObjects(uint32_t out_w, uint32_t out_h,
+                                             std::string& why) {
     if (!hwnd) { why = "Prepare() was not called on the frame thread"; return false; }
 
     if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)))) {
@@ -222,7 +250,7 @@ bool DlssNrEngine::Impl::CreateDeviceObjects(uint32_t w, uint32_t h, std::string
     }
 
     DXGI_SWAP_CHAIN_DESC1 scd{};
-    scd.Width = w; scd.Height = h;
+    scd.Width = out_w; scd.Height = out_h;
     scd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     scd.SampleDesc.Count = 1;
     scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -250,24 +278,119 @@ bool DlssNrEngine::Impl::CreateDeviceObjects(uint32_t w, uint32_t h, std::string
     return fence_event != nullptr;
 }
 
-bool DlssNrEngine::Impl::CreateFrameObjects(uint32_t w, uint32_t h, std::string& why) {
-    // Colour arrives as BGRA and is only read, so it stays BGRA: no swizzle on
-    // the hot path in. The output has to carry a typed UAV store for the
-    // runtime's residual apply, and BGRA8 does not guarantee one - hence RGBA8
-    // out and a swizzle on the way back.
-    color = Tex(device, w, h, DXGI_FORMAT_B8G8R8A8_UNORM, D3D12_RESOURCE_FLAG_NONE,
+bool DlssNrEngine::Impl::CreatePipeline(std::string& why) {
+    D3D12_DESCRIPTOR_RANGE ranges[2]{};
+    ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    ranges[0].NumDescriptors = 1;
+    ranges[0].BaseShaderRegister = 0;
+    ranges[0].OffsetInDescriptorsFromTableStart = 0;
+    ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    ranges[1].NumDescriptors = 1;
+    ranges[1].BaseShaderRegister = 0;
+    ranges[1].OffsetInDescriptorsFromTableStart = 1;
+
+    D3D12_ROOT_PARAMETER params[2]{};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[0].DescriptorTable.NumDescriptorRanges = 2;
+    params[0].DescriptorTable.pDescriptorRanges = ranges;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[1].Constants.ShaderRegister = 0;
+    params[1].Constants.Num32BitValues = 4;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_STATIC_SAMPLER_DESC samp{};
+    samp.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    samp.AddressU = samp.AddressV = samp.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samp.MaxLOD = D3D12_FLOAT32_MAX;
+    samp.ShaderRegister = 0;
+    samp.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_ROOT_SIGNATURE_DESC rs{};
+    rs.NumParameters = 2;
+    rs.pParameters = params;
+    rs.NumStaticSamplers = 1;
+    rs.pStaticSamplers = &samp;
+
+    ID3DBlob* blob = nullptr;
+    ID3DBlob* err = nullptr;
+    if (FAILED(D3D12SerializeRootSignature(&rs, D3D_ROOT_SIGNATURE_VERSION_1,
+                                           &blob, &err))) {
+        why = "root signature failed";
+        Rel(err); Rel(blob);
+        return false;
+    }
+    HRESULT hr = device->CreateRootSignature(0, blob->GetBufferPointer(),
+                                             blob->GetBufferSize(), IID_PPV_ARGS(&root));
+    Rel(blob); Rel(err);
+    if (FAILED(hr)) { why = "CreateRootSignature failed"; return false; }
+
+    ID3DBlob* cs = nullptr;
+    if (FAILED(D3DCompile(kResampleHLSL, sizeof(kResampleHLSL) - 1, "resample",
+                          nullptr, nullptr, "main", "cs_5_0", 0, 0, &cs, &err))) {
+        why = err ? std::string("resample shader: ") + (const char*)err->GetBufferPointer()
+                  : "resample shader failed to compile";
+        Rel(cs); Rel(err);
+        return false;
+    }
+    Rel(err);
+    D3D12_COMPUTE_PIPELINE_STATE_DESC pd{};
+    pd.pRootSignature = root;
+    pd.CS.pShaderBytecode = cs->GetBufferPointer();
+    pd.CS.BytecodeLength = cs->GetBufferSize();
+    hr = device->CreateComputePipelineState(&pd, IID_PPV_ARGS(&pso));
+    Rel(cs);
+    if (FAILED(hr)) { why = "CreateComputePipelineState failed"; return false; }
+
+    D3D12_DESCRIPTOR_HEAP_DESC hd{};
+    hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    hd.NumDescriptors = 4;
+    hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    if (FAILED(device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&heap)))) {
+        why = "descriptor heap failed"; return false;
+    }
+    heap_step = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    return true;
+}
+
+bool DlssNrEngine::Impl::CreateFrameObjects(uint32_t work_w, uint32_t work_h,
+                                            uint32_t out_w, uint32_t out_h,
+                                            std::string& why) {
+    // Frames arrive and leave at out res; the network sees work res.
+    src = Tex(device, out_w, out_h, DXGI_FORMAT_B8G8R8A8_UNORM,
+              D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
+    color = Tex(device, work_w, work_h, DXGI_FORMAT_R8G8B8A8_UNORM,
+                D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    depth = Tex(device, work_w, work_h, DXGI_FORMAT_R32_FLOAT,
+                D3D12_RESOURCE_FLAG_NONE,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    depth = Tex(device, w, h, DXGI_FORMAT_R32_FLOAT, D3D12_RESOURCE_FLAG_NONE,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    mv = Tex(device, w, h, DXGI_FORMAT_R16G16_FLOAT, D3D12_RESOURCE_FLAG_NONE,
+    mv = Tex(device, work_w, work_h, DXGI_FORMAT_R16G16_FLOAT,
+             D3D12_RESOURCE_FLAG_NONE,
              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    out = Tex(device, w, h, DXGI_FORMAT_R8G8B8A8_UNORM,
+    // The upscaler's output stays at WORK resolution on purpose. The runtime
+    // takes its colour from the dispatch output, not from the input, so this
+    // is the only thing that decides what the network costs: with the output
+    // at 2560x1440 it spent 45-49 ms a frame whatever the render size, and
+    // the scale slider did nothing. At work resolution the slider is the
+    // control it was meant to be, and the last step back up to the output
+    // size is the resample pass below.
+    //
+    // It also has to carry a typed UAV store for the runtime's residual
+    // apply, which B8G8R8A8 does not guarantee - hence RGBA8 here and one
+    // GPU pass to put the channels back in protocol order.
+    out = Tex(device, work_w, work_h, DXGI_FORMAT_R8G8B8A8_UNORM,
               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
               D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    if (!color || !depth || !mv || !out) { why = "input textures failed"; return false; }
+    bgra = Tex(device, out_w, out_h, DXGI_FORMAT_R8G8B8A8_UNORM,
+               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+               D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    if (!src || !color || !depth || !mv || !out || !bgra) {
+        why = "frame textures failed"; return false;
+    }
 
-    upload_pitch = Align(w * 4, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
-    upload_bytes = (UINT64)upload_pitch * h;
+    upload_pitch = Align(out_w * 4, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
+    upload_bytes = (UINT64)upload_pitch * out_h;
     readback_pitch = upload_pitch;
     readback_bytes = upload_bytes;
     upload = Buffer(device, upload_bytes, D3D12_HEAP_TYPE_UPLOAD,
@@ -276,6 +399,27 @@ bool DlssNrEngine::Impl::CreateFrameObjects(uint32_t w, uint32_t h, std::string&
                       D3D12_RESOURCE_STATE_COPY_DEST);
     if (!upload || !readback) { why = "staging buffers failed"; return false; }
 
+    // Descriptors: [0]=src SRV [1]=color UAV (downscale), [2]=out SRV
+    // [3]=bgra UAV (channel order). Written once, used every frame.
+    D3D12_CPU_DESCRIPTOR_HANDLE h = heap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Texture2D.MipLevels = 1;
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+
+    srv.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    device->CreateShaderResourceView(src, &srv, h);
+    h.ptr += heap_step;
+    uav.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    device->CreateUnorderedAccessView(color, nullptr, &uav, h);
+    h.ptr += heap_step;
+    srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    device->CreateShaderResourceView(out, &srv, h);
+    h.ptr += heap_step;
+    device->CreateUnorderedAccessView(bgra, nullptr, &uav, h);
+
     ffxCreateBackendDX12Desc backend{};
     backend.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12;
     backend.device = device;
@@ -283,8 +427,8 @@ bool DlssNrEngine::Impl::CreateFrameObjects(uint32_t w, uint32_t h, std::string&
     desc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
     desc.header.pNext = &backend.header;
     desc.flags = FFX_UPSCALE_ENABLE_AUTO_EXPOSURE;
-    desc.maxRenderSize = { w, h };
-    desc.maxUpscaleSize = { w, h };
+    desc.maxRenderSize = { work_w, work_h };
+    desc.maxUpscaleSize = { work_w, work_h };
     ffxReturnCode_t rc = create(&ffx, &desc.header, nullptr);
     if (rc != FFX_API_RETURN_OK) {
         char buf[64];
@@ -300,14 +444,7 @@ void DlssNrEngine::Impl::DestroyFrameObjects() {
     if (ffx && destroy) destroy(&ffx, nullptr);
     ffx = nullptr;
     Rel(readback); Rel(upload);
-    Rel(out); Rel(mv); Rel(depth); Rel(color);
-}
-
-void DlssNrEngine::Impl::DestroyAll() {
-    DestroyFrameObjects();
-    if (fence_event) { CloseHandle(fence_event); fence_event = nullptr; }
-    Rel(fence); Rel(cl); Rel(alloc); Rel(swap); Rel(queue); Rel(device); Rel(factory);
-    if (hwnd) { DestroyWindow(hwnd); hwnd = nullptr; }
+    Rel(bgra); Rel(out); Rel(mv); Rel(depth); Rel(color); Rel(src);
 }
 
 bool DlssNrEngine::Impl::Present() {
@@ -321,10 +458,19 @@ bool DlssNrEngine::Impl::Present() {
     return SUCCEEDED(hr) || hr == DXGI_STATUS_OCCLUDED;
 }
 
+void DlssNrEngine::Impl::WaitGpu(DWORD ms) {
+    if (!queue || !fence || !fence_event) return;
+    queue->Signal(fence, ++fence_value);
+    if (fence->GetCompletedValue() < fence_value) {
+        fence->SetEventOnCompletion(fence_value, fence_event);
+        WaitForSingleObject(fence_event, ms);
+    }
+}
+
 DlssNrEngine::~DlssNrEngine() { Stop(); }
 
-bool DlssNrEngine::Prepare(uint32_t w, uint32_t h, std::string& why) {
-    if (!w || !h) { why = "zero frame size"; return false; }
+bool DlssNrEngine::Prepare(uint32_t out_w, uint32_t out_h, std::string& why) {
+    if (!out_w || !out_h) { why = "zero frame size"; return false; }
     if (!impl_) impl_ = new Impl();
     if (impl_->hwnd) return true;
 
@@ -337,15 +483,16 @@ bool DlssNrEngine::Prepare(uint32_t w, uint32_t h, std::string& why) {
     // presented, the user must not get a second window on their desktop.
     impl_->hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName,
                                   L"NeuralScreen AMD NR", WS_POPUP,
-                                  -32000, -32000, (int)w, (int)h,
+                                  -32000, -32000, (int)out_w, (int)out_h,
                                   nullptr, nullptr, wc.hInstance, nullptr);
     if (!impl_->hwnd) { why = "no host window"; return false; }
     return true;
 }
 
-bool DlssNrEngine::Start(uint32_t w, uint32_t h, std::string& why) {
+bool DlssNrEngine::Start(uint32_t work_w, uint32_t work_h,
+                         uint32_t out_w, uint32_t out_h, std::string& why) {
     if (ready_) return true;
-    if (!w || !h) { why = "zero frame size"; return false; }
+    if (!work_w || !work_h || !out_w || !out_h) { why = "zero frame size"; return false; }
     if (!impl_ || !impl_->hwnd) { why = "Prepare() was not called first"; return false; }
 
     // The runtime keeps its ini, its log and its weights next to itself, so
@@ -375,7 +522,6 @@ bool DlssNrEngine::Start(uint32_t w, uint32_t h, std::string& why) {
     }
     if (!impl_->proxy) {
         why = "no DLSS-NR runtime (version.dll) beside the worker or in amd_mode/weights";
-        Stop();
         return false;
     }
     impl_->upscaler = LoadLibraryW((home + kUpscalerName).c_str());
@@ -383,7 +529,6 @@ bool DlssNrEngine::Start(uint32_t w, uint32_t h, std::string& why) {
     if (!impl_->upscaler) impl_->upscaler = LoadLibraryW(kUpscalerName);
     if (!impl_->upscaler) {
         why = "no amd_fidelityfx_upscaler_dx12.dll beside the runtime";
-        Stop();
         return false;
     }
     impl_->create = (PfnFfxCreateContext)(void*)GetProcAddress(impl_->upscaler, "ffxCreateContext");
@@ -391,7 +536,6 @@ bool DlssNrEngine::Start(uint32_t w, uint32_t h, std::string& why) {
     impl_->destroy = (PfnFfxDestroyContext)(void*)GetProcAddress(impl_->upscaler, "ffxDestroyContext");
     if (!impl_->create || !impl_->dispatch || !impl_->destroy) {
         why = "upscaler DLL has no FFX API entries";
-        Stop();
         return false;
     }
 
@@ -402,8 +546,8 @@ bool DlssNrEngine::Start(uint32_t w, uint32_t h, std::string& why) {
     //
     // It is a wait for evidence, not a blind sleep: the runtime names every
     // detour in its own log, and the pipeline gives a worker five seconds to
-    // answer a frame, so a fixed two-second guess would spend most of that
-    // budget doing nothing on a machine where the hooks land in 200 ms.
+    // answer a frame, so a fixed guess would spend that budget doing nothing
+    // on a machine where the hooks land in 200 ms.
     const uint32_t cap = EnvUint("NS_AMD_NR_WARMUP_MS", 3000);
     const std::string log_path = ToUtf8(home + L"dlssnr_on_amd.log");
     const char* kLastHook = "hooked IDXGISwapChain1::Present1";
@@ -421,40 +565,48 @@ bool DlssNrEngine::Start(uint32_t w, uint32_t h, std::string& why) {
             waited, log_path.c_str());
     }
 
-    if (!impl_->CreateDeviceObjects(w, h, why) || !impl_->CreateFrameObjects(w, h, why)) {
-        Stop();
+    if (!impl_->CreateDeviceObjects(out_w, out_h, why) ||
+        !impl_->CreatePipeline(why) ||
+        !impl_->CreateFrameObjects(work_w, work_h, out_w, out_h, why)) {
         return false;
     }
 
     // No warm-up presents here on purpose. Present belongs to the thread that
     // owns the window, and that thread is the one serving frames; presenting
     // from this one would wait on a pump that is busy answering the pipe. The
-    // runtime's engine init runs on the first few frames we do serve, which
-    // costs one ~35 ms kernel load and then settles.
-    width_ = w; height_ = h;
+    // runtime's engine init runs on the first few frames we do serve.
+    work_w_ = work_w; work_h_ = work_h;
+    out_w_ = out_w; out_h_ = out_h;
     ready_ = true;
-    Say("engine up at %ux%u (check dlssnr_on_amd.log for 'engine init ok')", w, h);
+    Say("engine up: network %ux%u -> output %ux%u", work_w, work_h, out_w, out_h);
     return true;
 }
 
-bool DlssNrEngine::Resize(uint32_t w, uint32_t h, std::string& why) {
+bool DlssNrEngine::Resize(uint32_t work_w, uint32_t work_h,
+                          uint32_t out_w, uint32_t out_h, std::string& why) {
     if (!ready_) return false;
-    if (w == width_ && h == height_) return true;
+    if (work_w == work_w_ && work_h == work_h_ && out_w == out_w_ && out_h == out_h_) {
+        return true;
+    }
+    impl_->WaitGpu(2000);
     impl_->DestroyFrameObjects();
-    if (impl_->swap) impl_->swap->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, 0);
-    if (!impl_->CreateFrameObjects(w, h, why)) {
+    if (out_w != out_w_ || out_h != out_h_) {
+        if (impl_->swap) impl_->swap->ResizeBuffers(0, out_w, out_h, DXGI_FORMAT_UNKNOWN, 0);
+    }
+    if (!impl_->CreateFrameObjects(work_w, work_h, out_w, out_h, why)) {
         ready_ = false;
         return false;
     }
-    width_ = w; height_ = h;
-    Say("resized to %ux%u", w, h);
+    work_w_ = work_w; work_h_ = work_h;
+    out_w_ = out_w; out_h_ = out_h;
+    Say("resized: network %ux%u -> output %ux%u", work_w, work_h, out_w, out_h);
     return true;
 }
 
-bool DlssNrEngine::Dispatch(const uint8_t* bgra, size_t bytes, const FrameParams& p,
-                            std::vector<uint8_t>& out) {
+bool DlssNrEngine::Dispatch(const uint8_t* bgra_in, uint8_t* bgra_out,
+                            size_t bytes, const FrameParams& p) {
     if (!ready_ || !impl_) return false;
-    const size_t expect = (size_t)width_ * height_ * 4;
+    const size_t expect = (size_t)out_w_ * out_h_ * 4;
     if (bytes != expect) return false;
 
     Impl& s = *impl_;
@@ -462,30 +614,42 @@ bool DlssNrEngine::Dispatch(const uint8_t* bgra, size_t bytes, const FrameParams
     uint8_t* mapped = nullptr;
     D3D12_RANGE nothing{ 0, 0 };
     if (FAILED(s.upload->Map(0, &nothing, (void**)&mapped))) return false;
-    for (uint32_t y = 0; y < height_; ++y) {
-        memcpy(mapped + (size_t)y * s.upload_pitch, bgra + (size_t)y * width_ * 4,
-               (size_t)width_ * 4);
+    for (uint32_t y = 0; y < out_h_; ++y) {
+        memcpy(mapped + (size_t)y * s.upload_pitch, bgra_in + (size_t)y * out_w_ * 4,
+               (size_t)out_w_ * 4);
     }
     s.upload->Unmap(0, nullptr);
 
     s.alloc->Reset();
     s.cl->Reset(s.alloc, nullptr);
 
-    Barrier(s.cl, s.color, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_COPY_DEST);
     D3D12_TEXTURE_COPY_LOCATION dst{}, src{};
     dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    dst.pResource = s.color; dst.SubresourceIndex = 0;
+    dst.pResource = s.src; dst.SubresourceIndex = 0;
     src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     src.pResource = s.upload;
     src.PlacedFootprint.Offset = 0;
     src.PlacedFootprint.Footprint.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    src.PlacedFootprint.Footprint.Width = width_;
-    src.PlacedFootprint.Footprint.Height = height_;
+    src.PlacedFootprint.Footprint.Width = out_w_;
+    src.PlacedFootprint.Footprint.Height = out_h_;
     src.PlacedFootprint.Footprint.Depth = 1;
     src.PlacedFootprint.Footprint.RowPitch = s.upload_pitch;
     s.cl->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-    Barrier(s.cl, s.color, D3D12_RESOURCE_STATE_COPY_DEST,
+    Barrier(s.cl, s.src, D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+    ID3D12DescriptorHeap* heaps[] = { s.heap };
+    s.cl->SetDescriptorHeaps(1, heaps);
+    s.cl->SetComputeRootSignature(s.root);
+    s.cl->SetPipelineState(s.pso);
+
+    D3D12_GPU_DESCRIPTOR_HANDLE table = s.heap->GetGPUDescriptorHandleForHeapStart();
+    // Pass 1: the captured frame down to the network's resolution.
+    UINT c1[4] = { work_w_, work_h_, 0, 0 };
+    s.cl->SetComputeRootDescriptorTable(0, table);
+    s.cl->SetComputeRoot32BitConstants(1, 4, c1, 0);
+    s.cl->Dispatch(Groups(work_w_), Groups(work_h_), 1);
+    Barrier(s.cl, s.color, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
     ffxDispatchDescUpscale dd{};
@@ -496,9 +660,9 @@ bool DlssNrEngine::Dispatch(const uint8_t* bgra, size_t bytes, const FrameParams
     dd.motionVectors = ffxApiGetResourceDX12(s.mv, FFX_API_RESOURCE_STATE_COMPUTE_READ);
     dd.output = ffxApiGetResourceDX12(s.out, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
     dd.jitterOffset = { 0.0f, 0.0f };
-    dd.motionVectorScale = { (float)width_, (float)height_ };
-    dd.renderSize = { width_, height_ };
-    dd.upscaleSize = { width_, height_ };
+    dd.motionVectorScale = { (float)work_w_, (float)work_h_ };
+    dd.renderSize = { work_w_, work_h_ };
+    dd.upscaleSize = { work_w_, work_h_ };
     dd.enableSharpening = false;
     dd.sharpness = 0.0f;
     dd.frameTimeDelta = p.frame_time_ms;
@@ -515,22 +679,43 @@ bool DlssNrEngine::Dispatch(const uint8_t* bgra, size_t bytes, const FrameParams
         return false;
     }
 
+    // Pass 2: the network's output into protocol channel order, on the GPU.
     Barrier(s.cl, s.out, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    s.cl->SetDescriptorHeaps(1, heaps);
+    s.cl->SetComputeRootSignature(s.root);
+    s.cl->SetPipelineState(s.pso);
+    D3D12_GPU_DESCRIPTOR_HANDLE table2 = table;
+    table2.ptr += (UINT64)s.heap_step * 2;
+    UINT c2[4] = { out_w_, out_h_, 1, 0 };
+    s.cl->SetComputeRootDescriptorTable(0, table2);
+    s.cl->SetComputeRoot32BitConstants(1, 4, c2, 0);
+    s.cl->Dispatch(Groups(out_w_), Groups(out_h_), 1);
+
+    Barrier(s.cl, s.bgra, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_COPY_SOURCE);
     D3D12_TEXTURE_COPY_LOCATION rdst{}, rsrc{};
     rdst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     rdst.pResource = s.readback;
     rdst.PlacedFootprint.Offset = 0;
     rdst.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    rdst.PlacedFootprint.Footprint.Width = width_;
-    rdst.PlacedFootprint.Footprint.Height = height_;
+    rdst.PlacedFootprint.Footprint.Width = out_w_;
+    rdst.PlacedFootprint.Footprint.Height = out_h_;
     rdst.PlacedFootprint.Footprint.Depth = 1;
     rdst.PlacedFootprint.Footprint.RowPitch = s.readback_pitch;
     rsrc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    rsrc.pResource = s.out; rsrc.SubresourceIndex = 0;
+    rsrc.pResource = s.bgra; rsrc.SubresourceIndex = 0;
     s.cl->CopyTextureRegion(&rdst, 0, 0, 0, &rsrc, nullptr);
-    Barrier(s.cl, s.out, D3D12_RESOURCE_STATE_COPY_SOURCE,
+
+    // Back to the states the next frame starts from.
+    Barrier(s.cl, s.bgra, D3D12_RESOURCE_STATE_COPY_SOURCE,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    Barrier(s.cl, s.out, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    Barrier(s.cl, s.color, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    Barrier(s.cl, s.src, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_COPY_DEST);
     s.cl->Close();
 
     ID3D12CommandList* lists[] = { s.cl };
@@ -547,19 +732,12 @@ bool DlssNrEngine::Dispatch(const uint8_t* bgra, size_t bytes, const FrameParams
         }
     }
 
-    if (out.size() != bytes) out.assign(bytes, 0);
     uint8_t* got = nullptr;
     D3D12_RANGE all{ 0, (SIZE_T)s.readback_bytes };
     if (FAILED(s.readback->Map(0, &all, (void**)&got))) return false;
-    for (uint32_t y = 0; y < height_; ++y) {
-        const uint8_t* srow = got + (size_t)y * s.readback_pitch;
-        uint8_t* drow = out.data() + (size_t)y * width_ * 4;
-        for (uint32_t x = 0; x < width_; ++x) {
-            drow[x * 4 + 0] = srow[x * 4 + 2];  // RGBA out of the UAV, BGRA in
-            drow[x * 4 + 1] = srow[x * 4 + 1];  // the protocol
-            drow[x * 4 + 2] = srow[x * 4 + 0];
-            drow[x * 4 + 3] = srow[x * 4 + 3];
-        }
+    for (uint32_t y = 0; y < out_h_; ++y) {
+        memcpy(bgra_out + (size_t)y * out_w_ * 4,
+               got + (size_t)y * s.readback_pitch, (size_t)out_w_ * 4);
     }
     s.readback->Unmap(0, &nothing);
     return true;
@@ -567,17 +745,13 @@ bool DlssNrEngine::Dispatch(const uint8_t* bgra, size_t bytes, const FrameParams
 
 void DlssNrEngine::Stop() {
     if (!impl_) return;
-    if (impl_->queue && impl_->fence && impl_->fence_event) {
-        impl_->queue->Signal(impl_->fence, ++impl_->fence_value);
-        if (impl_->fence->GetCompletedValue() < impl_->fence_value) {
-            impl_->fence->SetEventOnCompletion(impl_->fence_value, impl_->fence_event);
-            WaitForSingleObject(impl_->fence_event, 1000);
-        }
-    }
-    impl_->DestroyAll();
-    delete impl_;
-    impl_ = nullptr;
     ready_ = false;
+    // Wait for our own work, then let go without releasing anything: the
+    // runtime's detours and its worker thread are still live in this process
+    // and hold references to these objects. Tearing them down here is a race
+    // we cannot win from outside, and the process exits right after.
+    impl_->WaitGpu(1000);
+    impl_ = nullptr;
 }
 
 }  // namespace nsamd

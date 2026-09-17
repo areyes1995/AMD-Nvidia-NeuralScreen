@@ -75,8 +75,17 @@ Legend: `[x]` done, `[ ]` pending. Backend selection: `NS_NR_BACKEND` /
       6 ms/job at 320x180, engine live after ~3.4 s
 - [x] `tests/test_amd_hip_engine.py` (skips without the runtime installed)
 - [x] `tools/ab_compare.py --wait-neural` + `docs/ab_baseline_amd_hip.json`
-- [ ] Live run of the full app on this machine (worker-level only so far)
-- [ ] Perf at 1080p/4K + SHM/DDA channels (the pipe is now the bottleneck)
+- [x] Live run of the full app on this machine: 7.6 -> 17.2 FPS at 2560x1440,
+      neural pass on, clicks verified (click-through is menu-state, by design)
+- [x] Network at WORK resolution: the runtime takes its colour from the
+      dispatch OUTPUT, so FSR now outputs at work res and our compute pass
+      scales up - the scale slider went from useless to 20/14/9 ms
+- [x] SHM/OUTS channels accepted (send 14.2 -> 2.2 ms, recv 92 -> 30 ms), the
+      engine writes straight into the output section
+- [x] Clean exit: the worker leaves without running the hosted runtime's
+      teardown (it was failing fast, 0xC0000409, on a normal session end)
+- [ ] Next for FPS: DDA capture inside the worker (grab 5 ms + guides 7 ms +
+      show 10 ms are all still Python-side per frame)
 - [ ] Not shippable as-is (third-party runtime + NVIDIA-derived weights)
 
 ### Route B — own engine from the GPL source (blocked on author source)
