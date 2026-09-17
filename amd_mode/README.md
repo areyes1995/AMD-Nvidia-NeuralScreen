@@ -1,13 +1,18 @@
-# AMD backend (Phase 2a: echo worker live)
+# AMD backend (Phase 2b: the neural pass runs)
 
 HIP neural pipeline for AMD cards. `native/amd_nr_host.exe` (built by
-`build-amd.bat`, MSVC 2022) already speaks the full worker protocol
-with a passthrough neural pass — `NS_NR_BACKEND=amd` (or auto, when it
-is the only worker that can run) drives the complete pipeline on AMD:
-capture → guides → worker → fullscreen overlay, screenshots, recording,
-RNSZ. Every channel refusal is honest (pipe/dxcam/pygame fallbacks).
-Phase 2b swaps the passthrough for the HIP DlssNr engine; Python does
-not change.
+`build-amd.bat`, MSVC 2022) speaks the full worker protocol —
+`NS_NR_BACKEND=amd` (or auto, when it is the only worker that can run)
+drives the complete pipeline on AMD: capture → guides → worker →
+fullscreen overlay, screenshots, recording, RNSZ. Every channel refusal
+is honest (pipe/dxcam/pygame fallbacks).
+
+The neural pass itself is real when the DLSS-NR HIP runtime is installed
+in `weights/` (BYO, see its README): `native/dlssnr_engine.cpp` hosts
+that runtime inside the worker and dispatches the network per frame —
+6 ms/job at 320x180, 12 ms at 720p on an RX 9070 XT. Without it the
+worker serves byte-identical passthrough and says so. The how and the
+why are in `docs/AMD_HIP_HOSTING.md`; Python does not change either way.
 
 ```
 amd_mode/

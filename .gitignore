@@ -65,6 +65,10 @@ nvidia_mode/native/libraries/*.part
 amd_mode/weights/*.dll
 amd_mode/weights/*.bin
 amd_mode/weights/*.part
+# The hosted DLSS-NR runtime writes its settings and log next to itself:
+# machine-specific, and the template lives in amd_mode/weights/README.md.
+amd_mode/weights/*.ini
+amd_mode/weights/*.log
 # AMD HIP worker build artefacts (Phase 2)
 amd_mode/native/*.dll
 amd_mode/native/*.exe

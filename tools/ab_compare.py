@@ -78,6 +78,33 @@ def read_exact(pipe, n: int) -> bytes:
     return buf
 
 
+def wait_for_neural(proc, seconds: float) -> dict:
+    """Feed a still scene until the worker stops echoing it back.
+
+    A worker whose dispatch is a passthrough returns the frame byte for byte,
+    so "the output changed" is the one signal that works without asking the
+    worker anything. Returns what happened, for the report: a run measured on
+    passthrough and a run measured on the network must not look alike in the
+    JSON.
+    """
+    color, mv, _ = scene_pan(0)
+    deadline = time.perf_counter() + seconds
+    sent = 0
+    while time.perf_counter() < deadline:
+        proc.stdin.write(struct.pack(P.FRAME_FMT, P.FRAME_MAGIC, sent, 0, 0, sent))
+        proc.stdin.write(color)
+        proc.stdin.write(mv)
+        proc.stdin.flush()
+        head = read_exact(proc.stdout, struct.calcsize(P.OUT_FMT))
+        _m, _i, ok, nbytes, _r, _p = struct.unpack(P.OUT_FMT, head)
+        payload = read_exact(proc.stdout, nbytes) if (ok and nbytes) else b""
+        sent += 1
+        if payload and payload != color:
+            waited = seconds - (deadline - time.perf_counter())
+            return {"active": True, "frames": sent, "seconds": round(waited, 2)}
+    return {"active": False, "frames": sent, "seconds": seconds}
+
+
 def run_scene(proc, fn) -> dict:
     hashes, identical, t0 = [], True, time.perf_counter()
     for i in range(N):
@@ -105,6 +132,12 @@ def main() -> int:
     ap.add_argument("--exe", required=True)
     ap.add_argument("--label", default="")
     ap.add_argument("--out", default="")
+    ap.add_argument("--wait-neural", type=float, default=0.0, metavar="SECONDS",
+                    help="feed filler frames until the worker's output stops "
+                         "being byte-identical, then measure. The AMD HIP "
+                         "engine comes up asynchronously (a few seconds), so "
+                         "without this the scenes are all measured on the "
+                         "passthrough that runs meanwhile. 20 is plenty.")
     args = ap.parse_args()
 
     report = {"backend": args.label or Path(args.exe).stem,
@@ -130,6 +163,8 @@ def main() -> int:
             report["reason"] = f"worker exited during handshake: {err}"
             print(json.dumps(report, indent=2))
             return 0
+        if args.wait_neural > 0:
+            report["neural"] = wait_for_neural(proc, args.wait_neural)
         for name, fn in SCENES.items():
             report["scenes"][name] = run_scene(proc, fn)
             if not report["scenes"][name]["ok"]:

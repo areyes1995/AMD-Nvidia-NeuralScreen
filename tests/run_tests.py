@@ -136,6 +136,8 @@ ABOUT = {
     "test_window_surround.py": "a window-sized frame's surround is keyed, the layer is really keyed",
     "test_window_mode_menu.py": "the menu stays fully visible across the window-mode switch",
     "test_switch_veil.py": "the mode-switch veil eases in/out and owns the layer",
+    "test_gpl_request.py": "the GPL-3.0 source request still parses into a sendable issue",
+    "test_amd_hip_engine.py": "the AMD neural pass really runs and still looks like an image",
 }
 
 

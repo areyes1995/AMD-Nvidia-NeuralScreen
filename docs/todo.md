@@ -53,11 +53,36 @@ Legend: `[x]` done, `[ ]` pending. Backend selection: `NS_NR_BACKEND` /
       ready on this machine (plan B executable, graph still missing)
 - [x] `tests/test_amd_weights_exec.py` (synthetic tables + real 153-tensor
       pack when present + probe shape)
-- [x] `docs/GPL_SOURCE_REQUEST.md`: §6 source request draft (issue + DM
-      versions) — sending it is the 2b unlock
+- [x] `docs/GPL_SOURCE_REQUEST.md`: §6 source request, final text (issue +
+      DM versions), target verified (repo live, GPL-3.0, issues open)
+- [x] `tools/send_gpl_request.py`: builds the prefilled issue from the doc
+      (single source of truth) — browser, `--print`, or `--gh`; never posts
+      on its own. `tests/test_gpl_request.py` guards the seam
 
-## Phase 2b — Real HIP engine (pending, blocked on author source)
+## Phase 2b — Real HIP engine (pending)
 
+### Route A — host the shipped runtime (WORKING 2026-09-16, docs/AMD_HIP_HOSTING.md)
+
+- [x] Runtime identified: Danielblnc DLSS-NR on AMD, standalone version.dll
+      proxy; kernels already compiled in `.hip_fat` (no HIP SDK needed)
+- [x] `probe_dlssnr_host.exe`: it adopts our D3D12 device, queue and swapchain
+- [x] Real FSR dispatch from our host (FFX API headers vendored, MIT)
+- [x] `engine init ok`: wait for the runtime hooks before creating anything
+      D3D12, and `UseFsrInputs=1` in its ini (both silent failures otherwise)
+- [x] `dlssnr_engine.{h,cpp}` wired into `nr_host_full.cpp`: async start,
+      passthrough until ready, per-frame dispatch + readback, RNSZ resize
+- [x] Output returned over D5V3: A/B harness shows `byte_identical: false`,
+      6 ms/job at 320x180, engine live after ~3.4 s
+- [x] `tests/test_amd_hip_engine.py` (skips without the runtime installed)
+- [x] `tools/ab_compare.py --wait-neural` + `docs/ab_baseline_amd_hip.json`
+- [ ] Live run of the full app on this machine (worker-level only so far)
+- [ ] Perf at 1080p/4K + SHM/DDA channels (the pipe is now the bottleneck)
+- [ ] Not shippable as-is (third-party runtime + NVIDIA-derived weights)
+
+### Route B — own engine from the GPL source (blocked on author source)
+
+- [ ] **SEND the issue** (one human click): `python tools/send_gpl_request.py`
+      → review → «Submit new issue». Nothing else in 2b can start first.
 - [ ] HIP engine source (graph + kernels) from the pack author
 - [ ] HIP SDK for the `amd_nr_host` build (dynamic-load `amdhip64_7.dll`)
 - [ ] Weights converter (`weights.convert_weights`, `.bin` cache)

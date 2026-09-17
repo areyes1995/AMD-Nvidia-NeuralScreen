@@ -15,6 +15,22 @@
   Dagherbou's Neural Rendering fork, RenoDX colour work, FidelityFX,
   XeSS) ride along in the same folder.
 
+## FidelityFX API headers (vendored, MIT)
+
+- Source: AMD FidelityFX SDK `Kits/FidelityFX/{api,upscalers}/include`,
+  MIT, in `amd_mode/third_party/ffx_api/` (see its README for the one-line
+  local change to `FFX_API_ENTRY`).
+- Headers only: used to issue the FSR upscaler dispatch that the AMD DLSS-NR
+  runtime listens for (`docs/AMD_HIP_HOSTING.md`).
+
+## DLSS-NR on AMD runtime (Danielblnc) - research use, not redistributed
+
+- `dlssnr_amd_pass*.dll` / standalone `version.dll`, v0.2.14 / v0.2.18:
+  third-party binary, **not** part of this repository and not shipped in any
+  release ZIP. Loaded from the user's own copy for experiments only.
+- Its weights derive from NVIDIA `nvngx_dlssnr.dll`; same notice and takedown
+  policy as the NVIDIA runtimes below.
+
 ## NVIDIA runtimes (shipped unmodified, research use, takedown on request)
 
 - `nvngx_dlssnr.dll` (leaked 310.8.0), `nvngx_dlssg.dll` (public

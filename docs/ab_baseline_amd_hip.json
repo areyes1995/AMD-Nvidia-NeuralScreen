@@ -1,0 +1,42 @@
+{
+  "backend": "amd_nr_host_hip",
+  "exe": "E:\\NeuralScreen---AMD-Version\\amd_mode\\native\\amd_nr_host.exe",
+  "scenes": {
+    "pan": {
+      "ok": true,
+      "fps": 106.5,
+      "byte_identical": false,
+      "hash_first": "cbb0ab4d725caf76",
+      "hash_last": "fbdb15648a901cbc",
+      "hash_changes": 119
+    },
+    "dark": {
+      "ok": true,
+      "fps": 122.6,
+      "byte_identical": false,
+      "hash_first": "4b4584354c6f9950",
+      "hash_last": "b011ed89ab304e04",
+      "hash_changes": 119
+    },
+    "cut": {
+      "ok": true,
+      "fps": 116.9,
+      "byte_identical": false,
+      "hash_first": "f661de89c23bc502",
+      "hash_last": "46fd76e43f45cd41",
+      "hash_changes": 119
+    }
+  },
+  "ok": true,
+  "neural": {
+    "active": true,
+    "frames": 1269,
+    "seconds": 3.43
+  },
+  "telemetry": {
+    "frames": 1620,
+    "exposure": 0.734,
+    "mv_mean": 4.0,
+    "resets": 1
+  }
+}

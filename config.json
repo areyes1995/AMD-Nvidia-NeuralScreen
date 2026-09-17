@@ -4,7 +4,7 @@
   "height": 2160,
   "fullscreen": true,
   "warmup": 120,
-  "work_scale": 0.65,
+  "work_scale": 0.5,
   "lang": "en",
   "profile": "Natural",
   "intensity": 1.0,
@@ -16,8 +16,8 @@
   "capture_in_worker": true,
   "menu_scale": 1.0,
   "menu_offset": [
-    0,
-    0
+    198,
+    1
   ],
   "open_menu_on_start": true,
   "split": 0.0,

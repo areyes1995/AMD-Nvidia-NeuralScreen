@@ -2,13 +2,14 @@
 
 Spawns amd_mode/native/amd_nr_host.exe --live, feeds a synthetic D5V3
 stream (gradient BGRA + fp16 motion field) and asserts:
-  - OUT1 ok=1 with byte-identical passthrough pixels (dispatch is a stub)
+  - OUT1 ok=1 with byte-identical passthrough pixels (NS_AMD_NR=0)
   - [nr] telemetry on stderr carries exposure + motion + tuning params
   - MOTS resize is honoured (motion bytes follow the new grid)
   - one reset frame is counted (resets=1 in a later telemetry line)
 
 Needs the built exe + MSVC-built binary; runs anywhere on Windows.
 """
+import os
 import re
 import struct
 import subprocess
@@ -62,8 +63,13 @@ def main() -> int:
         print(f"SKIP: {EXE} not built (run amd_mode/native/build-amd.bat)")
         return 0
 
+    # NS_AMD_NR=0 pins the passthrough dispatch: this test is about the
+    # protocol and the neural INPUTS, and it has to read the same on a machine
+    # with the HIP runtime installed as on one without it.
+    # tests/test_amd_hip_engine.py covers the neural path itself.
+    env = dict(os.environ, NS_AMD_NR="0")
     proc = subprocess.Popen(
-        [str(EXE), "--live"],
+        [str(EXE), "--live"], env=env,
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     try:
